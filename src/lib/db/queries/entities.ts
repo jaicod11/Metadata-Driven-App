@@ -1,4 +1,5 @@
 // src/lib/db/queries/entities.ts
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
 
 export interface ListOptions {
@@ -72,7 +73,7 @@ export async function createEntityRecord(
   data: Record<string, unknown>
 ) {
   const row = await prisma.appData.create({
-    data: { appId, entity, data: data as any },
+    data: { appId, entity, data: data as Prisma.InputJsonValue },
   });
 
   return {
