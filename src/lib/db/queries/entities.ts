@@ -72,7 +72,7 @@ export async function createEntityRecord(
   data: Record<string, unknown>
 ) {
   const row = await prisma.appData.create({
-    data: { appId, entity, data },
+    data: { appId, entity, data: data as any },
   });
 
   return {
@@ -99,7 +99,7 @@ export async function updateEntityRecord(
 
   const updated = await prisma.appData.update({
     where: { id },
-    data: { data: merged },
+    data: { data: merged as any },
   });
 
   return {
@@ -132,6 +132,6 @@ export async function bulkCreateEntityRecords(
   rows: Record<string, unknown>[]
 ) {
   return prisma.appData.createMany({
-    data: rows.map((data) => ({ appId, entity, data })),
+    data: rows.map((data) => ({ appId, entity, data: data as any })),
   });
 }
