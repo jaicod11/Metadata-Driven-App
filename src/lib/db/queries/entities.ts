@@ -73,7 +73,7 @@ export async function createEntityRecord(
   data: Record<string, unknown>
 ) {
   const row = await prisma.appData.create({
-    data: { appId, entity, data: data as Prisma.InputJsonValue },
+    data: { appId, entity, data: JSON.parse(JSON.stringify(data)) },
   });
 
   return {
