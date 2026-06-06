@@ -19,7 +19,7 @@ export function FileField({ field, value, onChange }: Props) {
         }}
         className="block w-full text-sm text-gray-500 file:mr-3 file:py-1.5 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-blue-50 file:text-blue-700 hover:file:bg-blue-100 cursor-pointer"
       />
-      {value && (
+      {Boolean(value) && (
         <p className="text-xs text-gray-500">
           Current:{" "}
           <span className="font-mono bg-gray-100 px-1 rounded">{String(value)}</span>
