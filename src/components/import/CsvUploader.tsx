@@ -36,7 +36,7 @@ export function CsvUploader({ onFileParsed }: Props) {
       Papa.parse<Record<string, string>>(file, {
         header: true,
         skipEmptyLines: true,
-        trimHeaders: true,
+        transformHeader: (h) => h.trim(),
         transform: (v) => v.trim(),
         complete: (result) => {
           if (!result.meta.fields || result.meta.fields.length === 0) {
@@ -61,11 +61,10 @@ export function CsvUploader({ onFileParsed }: Props) {
     <div className="space-y-3">
       <div
         {...getRootProps()}
-        className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${
-          isDragActive
-            ? "border-blue-400 bg-blue-50"
-            : "border-gray-300 bg-gray-50 hover:border-blue-400 hover:bg-blue-50"
-        }`}
+        className={`border-2 border-dashed rounded-xl p-10 text-center cursor-pointer transition-colors ${isDragActive
+          ? "border-blue-400 bg-blue-50"
+          : "border-gray-300 bg-gray-50 hover:border-blue-400 hover:bg-blue-50"
+          }`}
       >
         <input {...getInputProps()} />
         <div className="text-3xl mb-3">📤</div>

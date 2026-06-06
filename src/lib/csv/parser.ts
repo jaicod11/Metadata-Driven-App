@@ -17,7 +17,7 @@ export function parseCsvString(csvText: string): ParsedCsvResult {
   const result = Papa.parse<Record<string, string>>(csvText, {
     header: true,
     skipEmptyLines: true,
-    trimHeaders: true,
+    transformHeader: (h) => h.trim(),
     transform: (value) => value.trim(),
   });
 
@@ -41,7 +41,7 @@ export function parseCsvFile(file: File): Promise<ParsedCsvResult> {
     Papa.parse<Record<string, string>>(file, {
       header: true,
       skipEmptyLines: true,
-      trimHeaders: true,
+      transformHeader: (h) => h.trim(),
       transform: (value) => value.trim(),
       complete: (result) => {
         resolve({
