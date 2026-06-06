@@ -28,7 +28,7 @@ export async function listEntityRecords(
     prisma.appData.count({ where: { appId, entity } }),
   ]);
 
-  const records = rows.map((r) => ({
+  const records = rows.map((r: any) => ({
     id: r.id,
     ...(r.data as Record<string, unknown>),
     createdAt: r.createdAt,
@@ -73,7 +73,7 @@ export async function createEntityRecord(
   data: Record<string, unknown>
 ) {
   const row = await prisma.appData.create({
-    data: { appId, entity, data: JSON.parse(JSON.stringify(data)) },
+    data: { appId, entity, data: data as any },
   });
 
   return {
