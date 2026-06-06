@@ -1,0 +1,162 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+// ─── NextAuth required tables ────────────────────────────────────────────────
+
+model User {
+  id            String    @id @default(cuid())
+  name          String?
+  email         String    @unique
+  emailVerified DateTime?
+  image         String?
+  password      String?   // null for OAuth-only users
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  accounts  Account[]
+  sessions  Session[]
+  apps      App[]
+
+  @@map("users")
+}
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@map("accounts")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("sessions")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_tokens")
+}
+
+// ─── Application tables ───────────────────────────────────────────────────────
+
+model App {
+  id          String   @id @default(cuid())
+  name        String
+  slug        String   @unique     // URL-safe identifier
+  description String?
+  config      Json                 // Full AppConfig JSON
+  userId      String
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  data      AppData[]
+  workflows Workflow[]
+  imports   CsvImport[]
+
+  @@map("apps")
+}
+
+// Stores dynamic entity rows as JSONB.
+// One row per record in any dynamic entity (e.g. "contact", "product").
+model AppData {
+  id        String   @id @default(cuid())
+  appId     String
+  entity    String   // matches entity.name in the AppConfig
+  data      Json     // the actual field values
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@index([appId, entity])
+  @@index([appId, entity, createdAt])
+  @@map("app_data")
+}
+
+// ─── Workflow tables ──────────────────────────────────────────────────────────
+
+model Workflow {
+  id          String   @id @default(cuid())
+  appId       String
+  name        String
+  description String?
+  // trigger: { type: "onSubmit"|"onUpdate"|"onDelete"|"schedule"|"manual", entity?: string, cron?: string }
+  trigger     Json
+  // steps: Array<{ id, type: "sendEmail"|"callWebhook"|"transform"|"notify"|"condition", config: {...} }>
+  steps       Json
+  isActive    Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  app        App                 @relation(fields: [appId], references: [id], onDelete: Cascade)
+  executions WorkflowExecution[]
+
+  @@map("workflows")
+}
+
+model WorkflowExecution {
+  id         String    @id @default(cuid())
+  workflowId String
+  status     String    @default("pending") // pending | running | success | failed
+  input      Json?
+  output     Json?
+  error      String?   @db.Text
+  startedAt  DateTime  @default(now())
+  finishedAt DateTime?
+
+  workflow Workflow @relation(fields: [workflowId], references: [id], onDelete: Cascade)
+
+  @@index([workflowId, status])
+  @@map("workflow_executions")
+}
+
+// ─── CSV Import tracking ──────────────────────────────────────────────────────
+
+model CsvImport {
+  id        String   @id @default(cuid())
+  appId     String
+  entity    String
+  fileName  String
+  rowCount  Int      @default(0)
+  status    String   @default("pending") // pending | processing | done | failed
+  // Array of { row: number, error: string } for failed rows
+  errors    Json?
+  createdAt DateTime @default(now())
+
+  app App @relation(fields: [appId], references: [id], onDelete: Cascade)
+
+  @@map("csv_imports")
+}
