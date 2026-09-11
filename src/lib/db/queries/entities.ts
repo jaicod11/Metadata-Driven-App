@@ -115,3 +115,28 @@ export async function bulkCreateEntityRecords(
     data: rows.map((data) => ({ appId, entity, data: data as any })),
   });
 }
+
+/**
+ * Finds a record whose JSONB `field` already holds `value` — backs the
+ * "unique" validation rule. `excludeId` skips the record being updated.
+ */
+export async function findRecordByFieldValue(
+  appId: string,
+  entity: string,
+  field: string,
+  value: unknown,
+  excludeId?: string
+) {
+  if (value === undefined || value === null || value === "") return null;
+
+  return prisma.appData.findFirst({
+    where: {
+      appId,
+      entity,
+      ...(excludeId ? { id: { not: excludeId } } : {}),
+      // JSONB path lookup: no column exists for a dynamic field.
+      data: { path: [field], equals: value as any },
+    },
+    select: { id: true },
+  });
+}

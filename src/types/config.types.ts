@@ -18,13 +18,22 @@ export interface SelectOption {
   value: string;
 }
 
+/**
+ * Validation rules for a single field. Declared once here and enforced in both
+ * places by src/lib/runtime/validator.ts — the generated form (client) and the
+ * runtime API routes (server).
+ */
 export interface FieldValidation {
-  min?: number;
-  max?: number;
-  minLength?: number;
-  maxLength?: number;
-  pattern?: string;
-  message?: string; // custom error message
+  required?: boolean;             // same rule as FieldConfig.required; either enables it
+  min?: number;                   // numeric minimum
+  max?: number;                   // numeric maximum
+  minLength?: number;             // string length
+  maxLength?: number;             // string length
+  regex?: string;                 // regular expression source, e.g. "^[A-Z]{2}-\\d+$"
+  pattern?: string;               // older spelling of "regex"; still honoured
+  email?: boolean;                // implied by type "email"
+  unique?: boolean;               // no other record of this entity may hold the value
+  message?: string;               // custom error message, used for every rule on the field
 }
 
 export interface FieldConfig {

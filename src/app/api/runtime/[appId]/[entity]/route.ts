@@ -11,7 +11,7 @@ import { NextRequest } from "next/server";
 import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/auth-options";
 import { parseConfig } from "@/lib/runtime/schema-parser";
-import { validateEntityData } from "@/lib/runtime/validator";
+import { validateEntityRecord } from "@/lib/runtime/validator.server";
 import {
   listEntityRecords,
   getEntityRecord,
@@ -39,7 +39,7 @@ async function resolveContext(appId: string, entityName: string, userId: string)
 
   const parsed = parseConfig(app.config);
   if (!parsed.valid || !parsed.config) {
-    return { error: apiError("App config is invalid", 422) };
+    return { error: apiError("App config is invalid", 422, parsed.errors) };
   }
 
   const entity = parsed.config.entities.find(
@@ -106,9 +106,12 @@ export async function POST(req: NextRequest, { params }: Params) {
       return apiError("Request body must be valid JSON", 400);
     }
 
-    const validation = validateEntityData(body, ctx.entity);
+    const validation = await validateEntityRecord(body, ctx.entity, {
+      appId,
+      entity: entityName,
+    });
     if (!validation.success) {
-      return apiError("Validation failed", 422, validation.errors);
+      return apiError("Validation failed", 400, validation.fieldErrors);
     }
 
     const record = await createEntityRecord(appId, entityName, validation.data!);
@@ -140,10 +143,14 @@ export async function PUT(req: NextRequest, { params }: Params) {
       return apiError("Request body must be valid JSON", 400);
     }
 
-    // Partial validation: only validate fields that are present in the patch
-    const validation = validateEntityData(body, ctx.entity);
+    // The record keeps its own value where a field is marked unique.
+    const validation = await validateEntityRecord(body, ctx.entity, {
+      appId,
+      entity: entityName,
+      excludeId: id,
+    });
     if (!validation.success) {
-      return apiError("Validation failed", 422, validation.errors);
+      return apiError("Validation failed", 400, validation.fieldErrors);
     }
 
     const updated = await updateEntityRecord(

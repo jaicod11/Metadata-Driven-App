@@ -57,7 +57,7 @@ export async function POST(req: NextRequest) {
     // Parse the app config to get the entity schema
     const configResult = parseConfig(app.config);
     if (!configResult.valid || !configResult.config) {
-      return apiError("App config is invalid", 422);
+      return apiError("App config is invalid", 422, configResult.errors);
     }
 
     const entity = configResult.config.entities.find((e) => e.name === entityName);

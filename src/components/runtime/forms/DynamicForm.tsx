@@ -5,6 +5,7 @@ import { useState } from "react";
 import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { FieldRenderer } from "./FieldRenderer";
 import { revalidateEntity } from "@/hooks/useRuntimeData";
+import { FieldError, validateEntityData } from "@/lib/runtime/validator";
 
 interface Props {
   page: PageConfig;
@@ -18,6 +19,24 @@ interface Props {
 }
 
 type SubmitStatus = "idle" | "loading" | "success" | "error";
+
+/** Field errors → the { fieldName: message } map FieldRenderer reads. */
+function toFieldMap(fieldErrors: FieldError[] | undefined): Record<string, string> {
+  const map: Record<string, string> = {};
+  for (const { field, message } of fieldErrors ?? []) {
+    if (!(field in map)) map[field] = message;
+  }
+  return map;
+}
+
+function isFieldError(value: unknown): value is FieldError {
+  return (
+    !!value &&
+    typeof value === "object" &&
+    typeof (value as FieldError).field === "string" &&
+    typeof (value as FieldError).message === "string"
+  );
+}
 
 export function DynamicForm({
   page,
@@ -46,19 +65,12 @@ export function DynamicForm({
   }
 
   // ── Client-side validation ────────────────────────────────────────────────
+  // Same rules the API enforces — one validator, one set of messages. The only
+  // rule it can't settle here is `unique`, which the server answers on submit.
   const validate = (): boolean => {
-    const newErrors: Record<string, string> = {};
-    for (const field of entity.fields) {
-      if (field.hidden) continue;
-      if (field.required) {
-        const v = formData[field.name];
-        if (v === undefined || v === null || v === "") {
-          newErrors[field.name] = `${field.label ?? field.name} is required`;
-        }
-      }
-    }
-    setErrors(newErrors);
-    return Object.keys(newErrors).length === 0;
+    const result = validateEntityData(formData, entity);
+    setErrors(toFieldMap(result.fieldErrors));
+    return result.success;
   };
 
   // ── Submit ────────────────────────────────────────────────────────────────
@@ -82,20 +94,34 @@ export function DynamicForm({
       const json = await res.json();
 
       if (!res.ok) {
-        // Map API validation errors back to fields when possible
-        if (Array.isArray(json.error?.details)) {
-          const fieldErrors: Record<string, string> = {};
-          json.error.details.forEach((msg: string) => {
-            const match = msg.match(/^([^:]+): (.+)$/);
-            if (match) fieldErrors[match[1]] = match[2];
-          });
-          if (Object.keys(fieldErrors).length > 0) {
-            setErrors(fieldErrors);
-          } else {
-            setApiError(json.error.details.join("; "));
+        // The API returns the same { field, message } errors this form produces
+        // locally — including `unique`, which only the server can check.
+        const details: unknown = json.error?.details;
+        const inline: Record<string, string> = {};
+        const rest: string[] = [];
+
+        if (Array.isArray(details)) {
+          for (const detail of details) {
+            if (
+              isFieldError(detail) &&
+              entity.fields.some((f) => f.name === detail.field && !f.hidden)
+            ) {
+              if (!(detail.field in inline)) inline[detail.field] = detail.message;
+            } else if (isFieldError(detail)) {
+              rest.push(detail.message);
+            } else if (typeof detail === "string") {
+              rest.push(detail);
+            }
           }
-        } else {
-          setApiError(json.error?.message ?? "Submission failed");
+        }
+
+        if (Object.keys(inline).length > 0) setErrors(inline);
+        if (rest.length > 0 || Object.keys(inline).length === 0) {
+          setApiError(
+            rest.length > 0
+              ? rest.join("; ")
+              : json.error?.message ?? "Submission failed"
+          );
         }
         setStatus("error");
         return;

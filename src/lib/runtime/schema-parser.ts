@@ -3,6 +3,10 @@
 // Parses raw JSON into a validated, normalised AppConfig.
 // The golden rule: NEVER throw — always return errors/warnings instead.
 // Unknown field types, missing pages, bad references → warnings, not crashes.
+//
+// Structure is checked first by the Zod gate in src/lib/config-schema.ts, which
+// reports *which entity / field / page* is wrong. Everything that can be
+// recovered from is normalised here and recorded as a warning.
 
 import {
   AppConfig,
@@ -16,15 +20,13 @@ import {
   ConfigWarning,
   WorkflowConfig,
 } from "@/types/config.types";
-
-const VALID_FIELD_TYPES: FieldType[] = [
-  "string", "number", "boolean", "date",
-  "select", "file", "email", "url", "textarea",
-];
-
-const VALID_LAYOUT_TYPES: LayoutType[] = [
-  "form", "table", "dashboard", "grid", "tabs", "stack",
-];
+import {
+  DEFAULT_CONFIG_VERSION,
+  FIELD_TYPES,
+  LAYOUT_TYPES,
+  TRIGGER_TYPES,
+  validateAppConfig,
+} from "@/lib/config-schema";
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -33,35 +35,27 @@ export function parseConfig(raw: unknown): ParsedConfig {
   const errors: ConfigError[] = [];
   const warnings: ConfigWarning[] = [];
 
-  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-    return {
-      valid: false,
-      config: null,
-      errors: [{ path: "root", message: "Config must be a JSON object" }],
-      warnings: [],
-    };
+  // ── structural gate ───────────────────────────────────────────────────────
+  // Zod validates the shape before anything below reads it, so a broken config
+  // surfaces as "entity X → field Y is invalid" instead of crashing downstream
+  // (buildEntitySchema, z.enum, new RegExp) on values that can't be recovered.
+  const validated = validateAppConfig(raw);
+  if (!validated.success) {
+    return { valid: false, config: null, errors: validated.errors, warnings: [] };
   }
 
+  // Guaranteed by the gate: an object with a non-empty "name" and an "entities"
+  // array whose items are objects with non-empty names.
   const data = raw as Record<string, unknown>;
-
-  // ── name ──────────────────────────────────────────────────────────────────
-  let appName = "Unnamed App";
-  if (!data.name || typeof data.name !== "string" || !data.name.trim()) {
-    errors.push({ path: "name", message: "App name is required (non-empty string)" });
-  } else {
-    appName = data.name.trim();
-  }
+  const appName = String(data.name).trim();
 
   // ── entities ──────────────────────────────────────────────────────────────
   const entities: EntityConfig[] = [];
-  if (!Array.isArray(data.entities)) {
-    errors.push({ path: "entities", message: "\"entities\" must be an array" });
-  } else {
-    data.entities.forEach((e, i) => {
-      const parsed = parseEntity(e, `entities[${i}]`, errors, warnings);
-      if (parsed) entities.push(parsed);
-    });
-  }
+  const rawEntities = Array.isArray(data.entities) ? data.entities : [];
+  rawEntities.forEach((e, i) => {
+    const parsed = parseEntity(e, `entities[${i}]`, errors, warnings);
+    if (parsed) entities.push(parsed);
+  });
 
   // ── pages ─────────────────────────────────────────────────────────────────
   const pages: PageConfig[] = [];
@@ -86,7 +80,7 @@ export function parseConfig(raw: unknown): ParsedConfig {
   const config: AppConfig = {
     name: appName,
     description: typeof data.description === "string" ? data.description.trim() : undefined,
-    version: typeof data.version === "string" ? data.version : "1.0.0",
+    version: typeof data.version === "string" ? data.version : DEFAULT_CONFIG_VERSION,
     entities,
     pages,
     workflows,
@@ -191,7 +185,7 @@ function parseField(
       path: `${path}.type`,
       message: `Field "${fieldName}" in "${entityName}" has no type — defaulting to "string"`,
     });
-  } else if (!VALID_FIELD_TYPES.includes(data.type as FieldType)) {
+  } else if (!FIELD_TYPES.includes(data.type as FieldType)) {
     warnings.push({
       path: `${path}.type`,
       message: `Unknown field type "${data.type}" on "${fieldName}" — defaulting to "string"`,
@@ -217,12 +211,16 @@ function parseField(
     defaultValue: data.defaultValue ?? undefined,
     helpText: typeof data.helpText === "string" ? data.helpText : undefined,
     hidden: typeof data.hidden === "boolean" ? data.hidden : false,
+    // Coerced to strings: buildEntitySchema feeds these to z.enum(), which
+    // rejects non-string members.
     options: Array.isArray(data.options)
-      ? data.options.filter(
-          (o): o is { label: string; value: string } =>
-            typeof o === "object" && o !== null &&
-            "label" in o && "value" in o
-        )
+      ? data.options
+          .filter(
+            (o): o is Record<string, unknown> =>
+              typeof o === "object" && o !== null &&
+              "label" in o && "value" in o
+          )
+          .map((o) => ({ label: String(o.label), value: String(o.value) }))
       : undefined,
     validation:
       data.validation && typeof data.validation === "object" && !Array.isArray(data.validation)
@@ -259,7 +257,7 @@ function parsePage(
       path: `${path}.layout`,
       message: `Page "${pagePath}" has no layout — defaulting to "table"`,
     });
-  } else if (!VALID_LAYOUT_TYPES.includes(data.layout as LayoutType)) {
+  } else if (!LAYOUT_TYPES.includes(data.layout as LayoutType)) {
     warnings.push({
       path: `${path}.layout`,
       message: `Unknown layout "${data.layout}" on page "${pagePath}" — defaulting to "table"`,
@@ -305,9 +303,8 @@ function parseWorkflow(
     return null;
   }
 
-  const VALID_TRIGGERS = ["onSubmit", "onUpdate", "onDelete", "schedule", "manual"];
   const trigger = data.trigger as Record<string, unknown> | undefined;
-  if (!trigger || !VALID_TRIGGERS.includes(trigger?.type as string)) {
+  if (!trigger || !TRIGGER_TYPES.includes(trigger?.type as WorkflowConfig["trigger"]["type"])) {
     warnings.push({
       path: `${path}.trigger`,
       message: `Workflow "${data.name}" has an invalid trigger — skipping`,
