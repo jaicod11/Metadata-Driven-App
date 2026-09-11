@@ -7,6 +7,7 @@ import { FieldRenderer } from "./FieldRenderer";
 import { revalidateEntity } from "@/hooks/useRuntimeData";
 import { FieldError, validateEntityData } from "@/lib/runtime/validator";
 import { isHasMany } from "@/lib/runtime/relations";
+import { computeFieldValue, isComputed } from "@/lib/runtime/computed";
 import {
   ActiveRole,
   FULL_ACCESS_ROLE,
@@ -57,8 +58,10 @@ export function DynamicForm({
   onSuccess,
   role = FULL_ACCESS_ROLE,
 }: Props) {
-  const [formData, setFormData] = useState<Record<string, unknown>>(
-    initialData ?? {}
+  // Computed values may arrive on a record from the API; they are derived, so
+  // they never become form state and are never submitted.
+  const [formData, setFormData] = useState<Record<string, unknown>>(() =>
+    storedOnly(initialData, entity)
   );
   const [errors, setErrors] = useState<Record<string, string>>({});
   const [status, setStatus] = useState<SubmitStatus>("idle");
@@ -156,7 +159,7 @@ export function DynamicForm({
   };
 
   const handleReset = () => {
-    setFormData(initialData ?? {});
+    setFormData(storedOnly(initialData, entity));
     setErrors({});
     setStatus("idle");
     setApiError(null);
@@ -177,8 +180,16 @@ export function DynamicForm({
           field={field}
           appId={appId}
           config={config}
-          editable={mayWrite && fieldAccess(entity, field, role).editable}
-          value={formData[field.name] ?? field.defaultValue ?? ""}
+          editable={
+            !isComputed(field) &&
+            mayWrite &&
+            fieldAccess(entity, field, role).editable
+          }
+          value={
+            isComputed(field)
+              ? computeFieldValue(field, formData)
+              : formData[field.name] ?? field.defaultValue ?? ""
+          }
           error={errors[field.name]}
           onChange={(val) => {
             setFormData((prev) => ({ ...prev, [field.name]: val }));
@@ -241,5 +252,19 @@ export function DynamicForm({
         </button>
       </div>
     </form>
+  );
+}
+
+/** Drop derived values from a record before it seeds the form. */
+function storedOnly(
+  data: Record<string, unknown> | undefined,
+  entity: EntityConfig | undefined
+): Record<string, unknown> {
+  if (!data) return {};
+  const derived = new Set(
+    (entity?.fields ?? []).filter(isComputed).map((f) => f.name)
+  );
+  return Object.fromEntries(
+    Object.entries(data).filter(([key]) => !derived.has(key))
   );
 }

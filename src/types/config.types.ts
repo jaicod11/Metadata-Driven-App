@@ -12,7 +12,8 @@ export type FieldType =
   | "email"
   | "url"
   | "textarea"
-  | "relation";
+  | "relation"
+  | "computed";
 
 /**
  * "belongsTo" stores the id of one record of the target entity on this record.
@@ -96,6 +97,11 @@ export interface FieldConfig {
   /** hasMany only: the belongsTo field on the target that points back here.
    *  Inferred from the target's fields when omitted. */
   foreignKey?: string;
+
+  // ── for "computed" type ────────────────────────────────────────────────────
+  /** Expression over sibling field names, e.g. "firstName + ' ' + lastName".
+   *  Evaluated at render time by src/lib/runtime/expression.ts; never stored. */
+  expression?: string;
 
   /** Per-role overrides, keyed by role name. Unlisted roles keep the default
    *  (visible and editable). */

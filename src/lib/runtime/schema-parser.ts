@@ -342,6 +342,11 @@ function parseField(
       type === "relation" && typeof data.foreignKey === "string"
         ? data.foreignKey.trim()
         : undefined,
+    // Checked against its sibling fields by the gate; evaluated at render time.
+    expression:
+      type === "computed" && typeof data.expression === "string"
+        ? data.expression.trim()
+        : undefined,
     permissions: permissionMap(data.permissions),
   };
 }

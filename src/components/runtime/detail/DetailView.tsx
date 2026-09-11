@@ -13,6 +13,7 @@ import {
   can,
   visibleFields,
 } from "@/lib/runtime/permissions";
+import { computeFieldValue, isComputed } from "@/lib/runtime/computed";
 
 interface Props {
   page: PageConfig;
@@ -121,7 +122,12 @@ export function DetailView({
                     role={role}
                   />
                 ) : (
-                  formatValue(record[field.name], field)
+                  formatValue(
+                    isComputed(field)
+                      ? computeFieldValue(field, record)
+                      : record[field.name],
+                    field
+                  )
                 )}
               </dd>
             </div>

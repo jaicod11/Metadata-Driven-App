@@ -12,6 +12,7 @@ import { UnknownField } from "./fields/UnknownField";
 import { RelationField } from "./fields/RelationField";
 import { RelationValue } from "../relations/RelationValue";
 import { isBelongsTo, isHasMany } from "@/lib/runtime/relations";
+import { isComputed } from "@/lib/runtime/computed";
 
 interface Props {
   field: FieldConfig;
@@ -42,9 +43,11 @@ export function FieldRenderer({
 
   const fieldProps = { field, value, error, onChange };
 
-  // Read-only for this role: show the value, never an input, so there is
-  // nothing to type into and nothing to submit.
-  const input = !editable ? (
+  // Read-only — either for this role, or because the field is computed and has
+  // no input at all. Nothing to type into, nothing to submit.
+  const readOnly = !editable || isComputed(field);
+
+  const input = readOnly ? (
     <ReadOnlyValue field={field} value={value} appId={appId} config={config} />
   ) : (() => {
     switch (field.type) {
@@ -71,7 +74,7 @@ export function FieldRenderer({
   })();
 
   // Checkbox label is rendered inside the component itself
-  if (field.type === "boolean") {
+  if (field.type === "boolean" && !readOnly) {
     return (
       <div className="space-y-1">
         {input}

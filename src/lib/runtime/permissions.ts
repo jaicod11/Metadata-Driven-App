@@ -31,6 +31,7 @@ import {
   RoleConfig,
 } from "@/types/config.types";
 import { isHasMany, isRelation, relationTarget } from "./relations";
+import { computedDependencies, isComputed, withComputedValues } from "./computed";
 
 export type PermissionAction = "read" | "create" | "update" | "delete";
 
@@ -211,10 +212,37 @@ export function visibleFields(
   entity: EntityConfig,
   role: ActiveRole
 ): FieldConfig[] {
-  return entity.fields.filter((field) => {
+  const self = (field: FieldConfig): boolean => {
     if (field.hidden) return false;
     if (!fieldAccess(entity, field, role).visible) return false;
     if (isRelation(field)) return canResolveRelation(config, field, role);
+    return true;
+  };
+
+  return entity.fields.filter((field) => {
+    if (!self(field)) return false;
+    // A computed value would expose whatever it reads, so it is shown only when
+    // the role may see every field the expression touches. Expressions cannot
+    // reference other computed fields, so this needs no recursion.
+    if (isComputed(field)) return canComputeField(config, entity, field, role);
+    return true;
+  });
+}
+
+/** Can this role see every field a computed expression reads? */
+export function canComputeField(
+  config: AppConfig,
+  entity: EntityConfig,
+  field: FieldConfig,
+  role: ActiveRole
+): boolean {
+  if (!isComputed(field)) return false;
+
+  return computedDependencies(field).every((name) => {
+    const source = entity.fields.find((f) => f.name === name);
+    if (!source) return false;
+    if (!fieldAccess(entity, source, role).visible) return false;
+    if (isRelation(source)) return canResolveRelation(config, source, role);
     return true;
   });
 }
@@ -239,7 +267,11 @@ export function writableFields(
 ): FieldConfig[] {
   if (!can(entity, role, action)) return [];
   return visibleFields(config, entity, role).filter(
-    (field) => fieldAccess(entity, field, role).editable && !isHasMany(field)
+    (field) =>
+      fieldAccess(entity, field, role).editable &&
+      !isHasMany(field) &&
+      // Computed fields are derived, so there is nothing to write.
+      !isComputed(field)
   );
 }
 
@@ -253,7 +285,10 @@ export function readableRecord(
   role: ActiveRole,
   record: Record<string, unknown>
 ): Record<string, unknown> {
-  const allowed = new Set(visibleFields(config, entity, role).map((f) => f.name));
+  const fields = visibleFields(config, entity, role);
+  const allowed = new Set(
+    fields.filter((f) => !isComputed(f)).map((f) => f.name)
+  );
   const result: Record<string, unknown> = {};
 
   for (const [key, value] of Object.entries(record)) {
@@ -265,7 +300,10 @@ export function readableRecord(
     if (allowed.has(key)) result[key] = value;
   }
 
-  return result;
+  // Computed values are derived here, from the full stored record, and only for
+  // the computed fields this role is allowed to see — so the response carries
+  // the result without ever carrying the fields it was computed from.
+  return withComputedValues(fields, record, result);
 }
 
 /**

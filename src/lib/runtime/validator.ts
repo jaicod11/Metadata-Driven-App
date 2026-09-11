@@ -18,6 +18,7 @@ import { z } from "zod";
 import { EntityConfig, FieldConfig } from "@/types/config.types";
 import { stripUndefined } from "@/lib/utils/validation";
 import { isHasMany } from "./relations";
+import { isComputed } from "./computed";
 
 /** One message, attached to the field it belongs to. */
 export interface FieldError {
@@ -94,6 +95,7 @@ export function buildEntitySchema(entity: EntityConfig): z.ZodObject<any> {
   for (const field of entity.fields) {
     if (field.hidden) continue; // hidden fields are ignored on input
     if (isHasMany(field)) continue; // virtual: children point back at this record
+    if (isComputed(field)) continue; // derived at render time, never stored
 
     const rules = resolveFieldRules(field);
 
@@ -142,7 +144,9 @@ export function validateEntityData(
     // Keep blanks the caller sent explicitly, so clearing a field still clears
     // it on write. They were only swapped out for the rule checks above.
     for (const field of entity.fields) {
-      if (field.hidden || isHasMany(field) || field.name in clean) continue;
+      if (field.hidden || isHasMany(field) || isComputed(field) || field.name in clean) {
+        continue;
+      }
       const raw = input[field.name];
       if (raw === "" || raw === null) clean[field.name] = raw;
     }

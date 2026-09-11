@@ -2,6 +2,8 @@
 "use client";
 
 import { EntityConfig } from "@/types/config.types";
+import { isComputed } from "@/lib/runtime/computed";
+import { isHasMany } from "@/lib/runtime/relations";
 
 export type ColumnMapping = Record<string, string | null>;
 // key   = CSV column header
@@ -15,7 +17,11 @@ interface Props {
 }
 
 export function ColumnMapper({ csvHeaders, entity, mapping, onChange }: Props) {
-  const fields = entity.fields.filter((f) => !f.hidden);
+  // Computed fields are derived and hasMany lives on the child, so neither can
+  // receive an imported column.
+  const fields = entity.fields.filter(
+    (f) => !f.hidden && !isComputed(f) && !isHasMany(f)
+  );
 
   const handleChange = (csvCol: string, fieldName: string | null) => {
     onChange({ ...mapping, [csvCol]: fieldName });

@@ -2,7 +2,13 @@
 "use client";
 
 import { useState } from "react";
-import { AppConfig, EntityConfig, FieldType, PageConfig } from "@/types/config.types";
+import {
+  AppConfig,
+  EntityConfig,
+  FieldConfig,
+  FieldType,
+  PageConfig,
+} from "@/types/config.types";
 import { useRuntimeData } from "@/hooks/useRuntimeData";
 import { TableActions } from "./TableActions";
 import { ErrorBoundary } from "../ErrorBoundary";
@@ -19,6 +25,7 @@ import {
   can,
   visibleFields,
 } from "@/lib/runtime/permissions";
+import { computeFieldValue, isComputed } from "@/lib/runtime/computed";
 
 interface Props {
   page: PageConfig;
@@ -154,7 +161,7 @@ export function DynamicTable({
                         title={
                           isBelongsTo(f)
                             ? undefined
-                            : formatCellValue(record[f.name], f.type)
+                            : formatCellValue(cellValue(f, record), f.type)
                         }
                       >
                         {isBelongsTo(f) ? (
@@ -166,7 +173,7 @@ export function DynamicTable({
                             role={role}
                           />
                         ) : (
-                          formatCellValue(record[f.name], f.type)
+                          formatCellValue(cellValue(f, record), f.type)
                         )}
                       </td>
                     ))}
@@ -226,6 +233,11 @@ export function DynamicTable({
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/** Computed fields are derived here, not read from the stored row. */
+function cellValue(field: FieldConfig, record: Record<string, unknown>): unknown {
+  return isComputed(field) ? computeFieldValue(field, record) : record[field.name];
+}
 
 function formatCellValue(value: unknown, type: FieldType | string): string {
   if (value === null || value === undefined) return "—";

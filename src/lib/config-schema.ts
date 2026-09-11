@@ -24,6 +24,7 @@
 //   must be a number
 
 import { z } from "zod";
+import { parseExpression } from "@/lib/runtime/expression";
 import type {
   ActionConfig,
   ActionType,
@@ -55,7 +56,7 @@ import type {
 
 export const FIELD_TYPES = [
   "string", "number", "boolean", "date",
-  "select", "file", "email", "url", "textarea", "relation",
+  "select", "file", "email", "url", "textarea", "relation", "computed",
 ] as const satisfies readonly FieldType[];
 
 export const RELATION_TYPES = [
@@ -160,6 +161,9 @@ export const fieldSchema = z.object({
   relationType: relationTypeSchema.optional(),
   displayField: z.string().optional(),
   foreignKey: z.string().optional(),
+  // Computed fields — the expression is parsed and checked against its sibling
+  // fields by computedExpressionErrors() below.
+  expression: z.string().optional(),
   permissions: z.record(fieldPermissionRuleSchema).optional(),
 }) satisfies z.ZodType<FieldConfig>;
 
@@ -409,6 +413,9 @@ const fieldInputSchema = z
       foreignKey: z
         .string({ invalid_type_error: `Relation "foreignKey" must be a field name` })
         .optional(),
+      expression: z
+        .string({ invalid_type_error: `A computed field's "expression" must be a string` })
+        .optional(),
       permissions: z
         .record(fieldPermissionInputSchema, {
           invalid_type_error: `Field "permissions" must be an object keyed by role name`,
@@ -654,6 +661,101 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+/**
+ * A computed field's expression may only read sibling fields that actually hold
+ * a value. Reported like a dangling relation target: a name that resolves to
+ * nothing has no sensible fallback.
+ *
+ * Referencing another computed field is refused too — that is what keeps
+ * evaluation single-pass and cycle-free.
+ */
+export function computedExpressionErrors(raw: unknown): ConfigError[] {
+  if (!isRecord(raw) || !Array.isArray(raw.entities)) return [];
+
+  const errors: ConfigError[] = [];
+
+  raw.entities.forEach((entity, entityIndex) => {
+    if (!isRecord(entity) || !Array.isArray(entity.fields)) return;
+
+    const fields = entity.fields.filter(isRecord);
+    const byName = new Map<string, Record<string, unknown>>();
+    for (const field of fields) {
+      if (typeof field.name === "string" && field.name.trim()) {
+        byName.set(field.name.trim(), field);
+      }
+    }
+    const entityName =
+      typeof entity.name === "string" ? entity.name.trim() : `#${entityIndex + 1}`;
+
+    entity.fields.forEach((field, fieldIndex) => {
+      if (!isRecord(field) || field.type !== "computed") return;
+
+      const path = ["entities", entityIndex, "fields", fieldIndex, "expression"];
+      const expression =
+        typeof field.expression === "string" ? field.expression : "";
+
+      if (!expression.trim()) {
+        errors.push(
+          configError(
+            raw,
+            path,
+            `A "computed" field needs an "expression", e.g. "firstName + ' ' + lastName"`
+          )
+        );
+        return;
+      }
+
+      const parsed = parseExpression(expression);
+      if (parsed.error) {
+        errors.push(configError(raw, path, `Expression is invalid — ${parsed.error}`));
+        return;
+      }
+
+      for (const name of parsed.fields) {
+        const sibling = byName.get(name);
+
+        if (!sibling) {
+          const known = Array.from(byName.keys()).filter((n) => n !== field.name);
+          errors.push(
+            configError(
+              raw,
+              path,
+              `Expression references "${name}", which entity "${entityName}" does not define` +
+                (known.length > 0 ? ` — this entity defines: ${known.join(", ")}` : "")
+            )
+          );
+          continue;
+        }
+
+        if (sibling.type === "computed") {
+          errors.push(
+            configError(
+              raw,
+              path,
+              name === field.name
+                ? `Expression references "${name}", which is the field itself`
+                : `Expression references "${name}", which is itself computed — a computed field can only read stored fields`
+            )
+          );
+          continue;
+        }
+
+        if (sibling.type === "relation" && sibling.relationType === "hasMany") {
+          errors.push(
+            configError(
+              raw,
+              path,
+              `Expression references "${name}", a hasMany relation, which holds no value on this record`
+            )
+          );
+        }
+      }
+    });
+  });
+
+  return errors;
+}
+
 /** Role names declared by a raw config, in declaration order. */
 function declaredRoleNames(raw: unknown): string[] {
   if (!isRecord(raw) || !Array.isArray(raw.roles)) return [];
@@ -808,6 +910,7 @@ export function validateAppConfig(raw: unknown): ConfigValidationResult {
     ...(result.success ? [] : toConfigErrors(result.error, raw)),
     ...relationReferenceErrors(raw),
     ...roleReferenceErrors(raw),
+    ...computedExpressionErrors(raw),
   ]);
 
   if (!result.success || errors.length > 0) {
