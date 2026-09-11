@@ -8,7 +8,8 @@ interface Props {
   record: Record<string, unknown>;
   appId: string;
   entity: string;
-  onDelete: (id: string) => Promise<void>;
+  /** Omitted when the role may not delete — the button is not rendered. */
+  onDelete?: (id: string) => Promise<void>;
   /** Set when the config defines a detail page for this entity. */
   detailHref?: string;
 }
@@ -17,6 +18,7 @@ export function TableActions({ record, onDelete, detailHref }: Props) {
   const [isDeleting, setIsDeleting] = useState(false);
 
   const handleDelete = async () => {
+    if (!onDelete) return;
     if (!confirm("Delete this record? This cannot be undone.")) return;
     setIsDeleting(true);
     try {
@@ -36,6 +38,7 @@ export function TableActions({ record, onDelete, detailHref }: Props) {
           View
         </Link>
       )}
+      {onDelete && (
       <button
         onClick={handleDelete}
         disabled={isDeleting}
@@ -44,6 +47,7 @@ export function TableActions({ record, onDelete, detailHref }: Props) {
       >
         {isDeleting ? "Deleting…" : "Delete"}
       </button>
+      )}
     </div>
   );
 }

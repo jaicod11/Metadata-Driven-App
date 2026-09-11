@@ -12,6 +12,7 @@ import { getServerSession } from "next-auth";
 import { authOptions } from "@/lib/auth/auth-options";
 import { getApp } from "@/lib/db/queries/apps";
 import { parseConfig } from "@/lib/runtime/schema-parser";
+import { can, resolveRole } from "@/lib/runtime/permissions";
 import { parseCsvString } from "@/lib/csv/parser";
 import { importCsvRows } from "@/lib/csv/importer";
 import { apiOk, apiError, apiUnauthorized, apiNotFound, apiServerError } from "@/lib/utils/api-response";
@@ -63,6 +64,21 @@ export async function POST(req: NextRequest) {
     const entity = configResult.config.entities.find((e) => e.name === entityName);
     if (!entity) {
       return apiError(`Entity "${entityName}" not found in this app's config`, 404);
+    }
+
+    // Importing is bulk creation — it answers to the same role permission.
+    const role = resolveRole(configResult.config, {
+      id: session.user.id,
+      email: session.user.email,
+      isOwner: app.userId === session.user.id,
+    });
+    if (!can(entity, role, "create")) {
+      return apiError(
+        `Your role ${role.name ? `("${role.name}") ` : ""}cannot create ${
+          entity.label ?? entity.name
+        } records`,
+        403
+      );
     }
 
     // Parse CSV text

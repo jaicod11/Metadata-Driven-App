@@ -13,18 +13,33 @@ import {
   isBelongsTo,
   isHasMany,
 } from "@/lib/runtime/relations";
+import {
+  ActiveRole,
+  FULL_ACCESS_ROLE,
+  can,
+  visibleFields,
+} from "@/lib/runtime/permissions";
 
 interface Props {
   page: PageConfig;
   entity?: EntityConfig;
   appId: string;
   config: AppConfig;
+  role?: ActiveRole;
 }
 
-export function DynamicTable({ page, entity, appId, config }: Props) {
+export function DynamicTable({
+  page,
+  entity,
+  appId,
+  config,
+  role = FULL_ACCESS_ROLE,
+}: Props) {
   const [currentPage, setCurrentPage] = useState(1);
+  const mayRead = can(entity, role, "read");
   const { data, isLoading, error, mutate } = useRuntimeData(
-    appId,
+    // Don't even ask for records this role cannot read — the API would 403.
+    mayRead ? appId : undefined,
     entity?.name,
     { page: currentPage, limit: 20 }
   );
@@ -35,6 +50,17 @@ export function DynamicTable({ page, entity, appId, config }: Props) {
       <div className="p-4 rounded-lg border border-dashed border-amber-300 bg-amber-50">
         <p className="text-sm text-amber-700">
           No entity configured for this table. Add an <code className="font-mono text-xs bg-amber-100 px-1 rounded">entity</code> key to this page in your config.
+        </p>
+      </div>
+    );
+  }
+
+  if (!mayRead) {
+    return (
+      <div className="p-4 rounded-lg border border-dashed border-gray-300 bg-gray-50">
+        <p className="text-sm text-gray-600">
+          Your role{role.name ? ` ("${role.label ?? role.name}")` : ""} cannot
+          view {entity.label ?? entity.name} records.
         </p>
       </div>
     );
@@ -67,9 +93,12 @@ export function DynamicTable({ page, entity, appId, config }: Props) {
 
   const records: Record<string, unknown>[] = data?.records ?? [];
   const meta = data?.meta;
-  // hasMany holds no value on this record — it lives on the detail page.
-  const visibleFields = entity.fields.filter((f) => !f.hidden && !isHasMany(f));
+  // hasMany holds no value on this record — it lives on the detail page. Fields
+  // this role cannot see, and relations whose target it cannot read, are dropped
+  // here so no cell ever tries to resolve them.
+  const columns = visibleFields(config, entity, role).filter((f) => !isHasMany(f));
   const detailPage = findDetailPage(config, entity.name);
+  const mayDelete = can(entity, role, "delete");
 
   const handleDelete = async (id: string) => {
     await fetch(`/api/runtime/${appId}/${entity.name}?id=${id}`, {
@@ -86,7 +115,7 @@ export function DynamicTable({ page, entity, appId, config }: Props) {
           <table className="min-w-full divide-y divide-gray-200 text-sm">
             <thead className="bg-gray-50">
               <tr>
-                {visibleFields.map((f) => (
+                {columns.map((f) => (
                   <th
                     key={f.name}
                     className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap"
@@ -103,7 +132,7 @@ export function DynamicTable({ page, entity, appId, config }: Props) {
               {records.length === 0 ? (
                 <tr>
                   <td
-                    colSpan={visibleFields.length + 1}
+                    colSpan={columns.length + 1}
                     className="px-4 py-12 text-center text-gray-400"
                   >
                     <p className="text-sm">No records yet.</p>
@@ -118,7 +147,7 @@ export function DynamicTable({ page, entity, appId, config }: Props) {
                     key={String(record.id)}
                     className="hover:bg-gray-50 transition-colors"
                   >
-                    {visibleFields.map((f) => (
+                    {columns.map((f) => (
                       <td
                         key={f.name}
                         className="px-4 py-3 text-gray-700 max-w-[240px] truncate"
@@ -134,6 +163,7 @@ export function DynamicTable({ page, entity, appId, config }: Props) {
                             field={f}
                             appId={appId}
                             config={config}
+                            role={role}
                           />
                         ) : (
                           formatCellValue(record[f.name], f.type)
@@ -145,7 +175,7 @@ export function DynamicTable({ page, entity, appId, config }: Props) {
                         record={record}
                         appId={appId}
                         entity={entity.name}
-                        onDelete={handleDelete}
+                        onDelete={mayDelete ? handleDelete : undefined}
                         detailHref={
                           detailPage
                             ? detailHref(appId, detailPage, String(record.id))

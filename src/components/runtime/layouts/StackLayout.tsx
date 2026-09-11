@@ -3,10 +3,11 @@
 import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { getComponent } from "../ComponentRegistry";
 import { ErrorBoundary } from "../ErrorBoundary";
+import type { ActiveRole } from "@/lib/runtime/permissions";
 
-interface Props { page: PageConfig; entity?: EntityConfig; appId: string; config: AppConfig; slug?: string[]; recordId?: string; }
+interface Props { page: PageConfig; entity?: EntityConfig; appId: string; config: AppConfig; slug?: string[]; recordId?: string; role?: ActiveRole; }
 
-export function StackLayout({ page, entity, appId, config, slug, recordId }: Props) {
+export function StackLayout({ page, entity, appId, config, slug, recordId, role }: Props) {
   const components = page.components ?? [];
   if (components.length === 0) {
     return <p className="text-sm text-gray-400">No components defined for this stack layout.</p>;
@@ -22,7 +23,7 @@ export function StackLayout({ page, entity, appId, config, slug, recordId }: Pro
           <ErrorBoundary key={i} componentType={comp.type}>
             <div>
               {comp.title && <h3 className="text-sm font-semibold text-gray-700 mb-2">{comp.title}</h3>}
-              <Comp page={page} entity={compEntity} appId={appId} config={config} slug={slug} recordId={recordId} {...(comp.props ?? {})} />
+              <Comp page={page} entity={compEntity} appId={appId} config={config} slug={slug} recordId={recordId} role={role} {...(comp.props ?? {})} />
             </div>
           </ErrorBoundary>
         );

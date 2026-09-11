@@ -31,12 +31,15 @@ import type {
   ComponentConfig,
   ConfigError,
   EntityConfig,
+  EntityPermissionRule,
   FieldConfig,
+  FieldPermissionRule,
   FieldType,
   FieldValidation,
   LayoutType,
   PageConfig,
   RelationType,
+  RoleConfig,
   SelectOption,
   ThemeConfig,
   TriggerType,
@@ -58,6 +61,11 @@ export const FIELD_TYPES = [
 export const RELATION_TYPES = [
   "belongsTo", "hasMany",
 ] as const satisfies readonly RelationType[];
+
+/** The verbs an entity permission rule can grant. */
+export const PERMISSION_ACTIONS = [
+  "read", "create", "update", "delete",
+] as const satisfies readonly (keyof EntityPermissionRule)[];
 
 export const LAYOUT_TYPES = [
   "form", "table", "dashboard", "detail", "grid", "tabs", "stack",
@@ -103,6 +111,25 @@ export const selectOptionSchema = z.object({
   value: z.string(),
 }) satisfies z.ZodType<SelectOption>;
 
+export const roleSchema = z.object({
+  name: z.string(),
+  label: z.string().optional(),
+  users: z.array(z.string()).optional(),
+  default: z.boolean().optional(),
+}) satisfies z.ZodType<RoleConfig>;
+
+export const entityPermissionRuleSchema = z.object({
+  read: z.boolean().optional(),
+  create: z.boolean().optional(),
+  update: z.boolean().optional(),
+  delete: z.boolean().optional(),
+}) satisfies z.ZodType<EntityPermissionRule>;
+
+export const fieldPermissionRuleSchema = z.object({
+  visible: z.boolean().optional(),
+  editable: z.boolean().optional(),
+}) satisfies z.ZodType<FieldPermissionRule>;
+
 export const fieldValidationSchema = z.object({
   required: z.boolean().optional(),
   min: z.number().optional(),
@@ -133,12 +160,14 @@ export const fieldSchema = z.object({
   relationType: relationTypeSchema.optional(),
   displayField: z.string().optional(),
   foreignKey: z.string().optional(),
+  permissions: z.record(fieldPermissionRuleSchema).optional(),
 }) satisfies z.ZodType<FieldConfig>;
 
 export const entitySchema = z.object({
   name: z.string(),
   label: z.string().optional(),
   fields: z.array(fieldSchema),
+  permissions: z.record(entityPermissionRuleSchema).optional(),
 }) satisfies z.ZodType<EntityConfig>;
 
 // ─── Views: pages, their layout, and the components inside them ───────────────
@@ -205,6 +234,7 @@ export const appConfigSchema = z.object({
   /** Optional; identifies the config format so old configs can be migrated. */
   version: z.string().optional(),
   theme: themeSchema.optional(),
+  roles: z.array(roleSchema).optional(),
   entities: z.array(entitySchema),
   pages: z.array(pageSchema),
   workflows: z.array(workflowSchema).optional(),
@@ -280,6 +310,60 @@ const validationInputSchema = z
   )
   .passthrough();
 
+/**
+ * Permission rules are strict: a mistyped verb ("write") or flag would silently
+ * grant nothing, so it is reported rather than ignored.
+ */
+const entityPermissionInputSchema = z
+  .object(
+    {
+      read: booleanRule("read"),
+      create: booleanRule("create"),
+      update: booleanRule("update"),
+      delete: booleanRule("delete"),
+    },
+    {
+      invalid_type_error: `Each entity permission must be an object like { "read": true }`,
+    }
+  )
+  .strict();
+
+const fieldPermissionInputSchema = z
+  .object(
+    {
+      visible: booleanRule("visible"),
+      editable: booleanRule("editable"),
+    },
+    {
+      invalid_type_error: `Each field permission must be an object like { "visible": false }`,
+    }
+  )
+  .strict();
+
+/** A role is either just its name, or an object carrying its members. */
+const roleInputSchema = z.union(
+  [
+    z.string().trim().min(1, "A role name must not be empty"),
+    z
+      .object({
+        name: requiredText("Role name"),
+        label: forgiving,
+        users: z
+          .array(z.string(), {
+            invalid_type_error: `Role "users" must be an array of emails`,
+          })
+          .optional(),
+        default: booleanRule("default"),
+      })
+      .passthrough(),
+  ],
+  {
+    errorMap: () => ({
+      message: `Each role must be a name, or an object like { "name": "viewer" }`,
+    }),
+  }
+);
+
 const selectOptionInputSchema = z
   .object(
     {
@@ -325,6 +409,11 @@ const fieldInputSchema = z
       foreignKey: z
         .string({ invalid_type_error: `Relation "foreignKey" must be a field name` })
         .optional(),
+      permissions: z
+        .record(fieldPermissionInputSchema, {
+          invalid_type_error: `Field "permissions" must be an object keyed by role name`,
+        })
+        .optional(),
       label: forgiving,
       required: forgiving,
       placeholder: forgiving,
@@ -344,6 +433,11 @@ const entityInputSchema = z
       fields: z
         .array(fieldInputSchema, {
           invalid_type_error: `Entity "fields" must be an array of field objects`,
+        })
+        .optional(),
+      permissions: z
+        .record(entityPermissionInputSchema, {
+          invalid_type_error: `Entity "permissions" must be an object keyed by role name`,
         })
         .optional(),
       label: forgiving,
@@ -410,6 +504,12 @@ export const appConfigInputSchema = z
       // Individual malformed workflows are skipped with a warning.
       workflows: z
         .array(z.unknown(), { invalid_type_error: `"workflows" must be an array` })
+        .optional(),
+      // No roles at all means everyone has full access — see permissions.ts.
+      roles: z
+        .array(roleInputSchema, {
+          invalid_type_error: `"roles" must be an array of role names or role objects`,
+        })
         .optional(),
       /** Optional config format version, for future migrations. */
       version: z
@@ -554,6 +654,72 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 
+/** Role names declared by a raw config, in declaration order. */
+function declaredRoleNames(raw: unknown): string[] {
+  if (!isRecord(raw) || !Array.isArray(raw.roles)) return [];
+  return raw.roles
+    .map((role) => {
+      if (typeof role === "string") return role.trim();
+      if (isRecord(role) && typeof role.name === "string") return role.name.trim();
+      return "";
+    })
+    .filter(Boolean);
+}
+
+/**
+ * Cross-reference check, like relation targets: a permissions map keyed by a
+ * role the config never declares is a restriction that silently never applies,
+ * so it is an error rather than a warning.
+ */
+export function roleReferenceErrors(raw: unknown): ConfigError[] {
+  if (!isRecord(raw) || !Array.isArray(raw.entities)) return [];
+
+  const known = new Set(declaredRoleNames(raw));
+  const errors: ConfigError[] = [];
+
+  const check = (
+    permissions: unknown,
+    path: (string | number)[],
+    subject: string
+  ) => {
+    if (!isRecord(permissions)) return;
+    for (const roleName of Object.keys(permissions)) {
+      if (known.has(roleName)) continue;
+      errors.push(
+        configError(
+          raw,
+          [...path, roleName],
+          known.size === 0
+            ? `${subject} names role "${roleName}", but this config declares no "roles"`
+            : `${subject} names role "${roleName}", which is not declared in "roles" — this config declares: ${Array.from(known).join(", ")}`
+        )
+      );
+    }
+  };
+
+  raw.entities.forEach((entity, entityIndex) => {
+    if (!isRecord(entity)) return;
+
+    check(
+      entity.permissions,
+      ["entities", entityIndex, "permissions"],
+      "Entity permission"
+    );
+
+    if (!Array.isArray(entity.fields)) return;
+    entity.fields.forEach((field, fieldIndex) => {
+      if (!isRecord(field)) return;
+      check(
+        field.permissions,
+        ["entities", entityIndex, "fields", fieldIndex, "permissions"],
+        "Field permission"
+      );
+    });
+  });
+
+  return errors;
+}
+
 /**
  * Cross-reference check Zod cannot express on its own: a "relation" field must
  * name a `target` entity, and that entity must exist in this config. Reported
@@ -641,6 +807,7 @@ export function validateAppConfig(raw: unknown): ConfigValidationResult {
   const errors = dedupe([
     ...(result.success ? [] : toConfigErrors(result.error, raw)),
     ...relationReferenceErrors(raw),
+    ...roleReferenceErrors(raw),
   ]);
 
   if (!result.success || errors.length > 0) {

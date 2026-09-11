@@ -10,7 +10,8 @@ import { DateField }    from "./fields/DateField";
 import { FileField }    from "./fields/FileField";
 import { UnknownField } from "./fields/UnknownField";
 import { RelationField } from "./fields/RelationField";
-import { isHasMany } from "@/lib/runtime/relations";
+import { RelationValue } from "../relations/RelationValue";
+import { isBelongsTo, isHasMany } from "@/lib/runtime/relations";
 
 interface Props {
   field: FieldConfig;
@@ -20,9 +21,19 @@ interface Props {
   /** Relation inputs need these to load the target entity's records. */
   appId?: string;
   config?: AppConfig;
+  /** False when the role may see the field but not change it. */
+  editable?: boolean;
 }
 
-export function FieldRenderer({ field, value, error, onChange, appId, config }: Props) {
+export function FieldRenderer({
+  field,
+  value,
+  error,
+  onChange,
+  appId,
+  config,
+  editable = true,
+}: Props) {
   // Skip hidden fields entirely
   if (field.hidden) return null;
 
@@ -31,7 +42,11 @@ export function FieldRenderer({ field, value, error, onChange, appId, config }: 
 
   const fieldProps = { field, value, error, onChange };
 
-  const input = (() => {
+  // Read-only for this role: show the value, never an input, so there is
+  // nothing to type into and nothing to submit.
+  const input = !editable ? (
+    <ReadOnlyValue field={field} value={value} appId={appId} config={config} />
+  ) : (() => {
     switch (field.type) {
       case "string":
       case "email":
@@ -78,4 +93,45 @@ export function FieldRenderer({ field, value, error, onChange, appId, config }: 
       {error && <p className="text-xs text-red-600 mt-0.5">{error}</p>}
     </div>
   );
+}
+
+// ── Read-only rendering ────────────────────────────────────────────────────────
+
+/** A field the role may see but not change: its value, not an input. */
+function ReadOnlyValue({
+  field,
+  value,
+  appId,
+  config,
+}: {
+  field: FieldConfig;
+  value: unknown;
+  appId?: string;
+  config?: AppConfig;
+}) {
+  const box =
+    "w-full px-3 py-2 border border-gray-200 rounded-lg text-sm bg-gray-50 text-gray-600";
+
+  if (isBelongsTo(field) && appId && config) {
+    return (
+      <div className={box}>
+        <RelationValue value={value} field={field} appId={appId} config={config} />
+      </div>
+    );
+  }
+
+  if (value === null || value === undefined || value === "") {
+    return <div className={`${box} text-gray-400`}>—</div>;
+  }
+
+  if (field.type === "boolean") {
+    return <div className={box}>{value ? "✓ Yes" : "✗ No"}</div>;
+  }
+
+  if (field.type === "select") {
+    const option = field.options?.find((o) => o.value === String(value));
+    return <div className={box}>{option?.label ?? String(value)}</div>;
+  }
+
+  return <div className={box}>{String(value)}</div>;
 }

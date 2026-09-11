@@ -4,6 +4,11 @@
 import { AppConfig, FieldConfig } from "@/types/config.types";
 import { useRuntimeData } from "@/hooks/useRuntimeData";
 import { recordLabel, relationTarget } from "@/lib/runtime/relations";
+import {
+  ActiveRole,
+  FULL_ACCESS_ROLE,
+  canResolveRelation,
+} from "@/lib/runtime/permissions";
 
 interface Props {
   field: FieldConfig;
@@ -12,6 +17,7 @@ interface Props {
   onChange: (value: unknown) => void;
   appId?: string;
   config?: AppConfig;
+  role?: ActiveRole;
 }
 
 const selectClass =
@@ -22,16 +28,26 @@ const selectClass =
  * belongsTo input: the target entity's records as a dropdown, storing the
  * chosen record's id. The list is capped at the API's maximum page size.
  */
-export function RelationField({ field, value, onChange, appId, config }: Props) {
+export function RelationField({
+  field,
+  value,
+  onChange,
+  appId,
+  config,
+  role = FULL_ACCESS_ROLE,
+}: Props) {
   const target = config ? relationTarget(field, config.entities) : undefined;
+  // Picking a record means reading the target entity — don't ask if the role
+  // may not.
+  const permitted = Boolean(config && canResolveRelation(config, field, role));
 
   const { data, isLoading, error } = useRuntimeData(
-    appId,
+    permitted ? appId : undefined,
     target?.name,
     { limit: 100 }
   );
 
-  if (!config || !appId || !target) {
+  if (!config || !appId || !target || !permitted) {
     return (
       <div className="px-3 py-2 border border-dashed border-amber-300 bg-amber-50 rounded-lg text-sm text-amber-600">
         Relation &quot;{field.name}&quot; points at{" "}

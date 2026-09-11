@@ -19,6 +19,7 @@ import {
   ConfigError,
   ConfigWarning,
   RelationType,
+  RoleConfig,
   WorkflowConfig,
 } from "@/types/config.types";
 import {
@@ -80,6 +81,9 @@ export function parseConfig(raw: unknown): ParsedConfig {
     });
   }
 
+  // ── roles ─────────────────────────────────────────────────────────────────
+  const roles = parseRoles(data.roles, warnings);
+
   // ── relations ─────────────────────────────────────────────────────────────
   // Targets are verified by the gate; what's left are the soft references that
   // degrade to a warning.
@@ -89,6 +93,7 @@ export function parseConfig(raw: unknown): ParsedConfig {
     name: appName,
     description: typeof data.description === "string" ? data.description.trim() : undefined,
     version: typeof data.version === "string" ? data.version : DEFAULT_CONFIG_VERSION,
+    roles,
     entities,
     pages,
     workflows,
@@ -162,7 +167,76 @@ function parseEntity(
     name: entityName,
     label: typeof data.label === "string" ? data.label.trim() : entityName,
     fields,
+    permissions: permissionMap(data.permissions),
   };
+}
+
+/**
+ * Roles normalise to objects, so `["admin", "viewer"]` and the object form mean
+ * the same thing downstream. Duplicates and extra defaults have an obvious
+ * fallback — first one wins — so they warn rather than block.
+ */
+function parseRoles(raw: unknown, warnings: ConfigWarning[]): RoleConfig[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  const roles: RoleConfig[] = [];
+  const seen = new Set<string>();
+  let defaultRole: string | null = null;
+
+  raw.forEach((entry, i) => {
+    const path = `roles[${i}]`;
+    const source =
+      typeof entry === "string"
+        ? { name: entry }
+        : entry && typeof entry === "object" && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>)
+        : null;
+
+    if (!source || typeof source.name !== "string" || !source.name.trim()) return;
+
+    const name = source.name.trim();
+    if (seen.has(name)) {
+      warnings.push({
+        path: `${path}.name`,
+        message: `Duplicate role "${name}" — keeping the first one`,
+      });
+      return;
+    }
+    seen.add(name);
+
+    let isDefault = source.default === true;
+    if (isDefault && defaultRole) {
+      warnings.push({
+        path: `${path}.default`,
+        message: `Role "${name}" is also marked default; "${defaultRole}" already is — keeping "${defaultRole}"`,
+      });
+      isDefault = false;
+    }
+    if (isDefault) defaultRole = name;
+
+    roles.push({
+      name,
+      label: typeof source.label === "string" ? source.label.trim() : name,
+      users: Array.isArray(source.users)
+        ? source.users.filter((u): u is string => typeof u === "string")
+        : undefined,
+      default: isDefault || undefined,
+    });
+  });
+
+  return roles;
+}
+
+/** Permission maps are shape-checked by the gate; keep only object entries. */
+function permissionMap<T>(raw: unknown): Record<string, T> | undefined {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return undefined;
+
+  const entries = Object.entries(raw as Record<string, unknown>).filter(
+    ([, rule]) => rule && typeof rule === "object" && !Array.isArray(rule)
+  );
+  return entries.length > 0
+    ? (Object.fromEntries(entries) as Record<string, T>)
+    : undefined;
 }
 
 function parseField(
@@ -268,6 +342,7 @@ function parseField(
       type === "relation" && typeof data.foreignKey === "string"
         ? data.foreignKey.trim()
         : undefined,
+    permissions: permissionMap(data.permissions),
   };
 }
 

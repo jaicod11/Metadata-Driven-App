@@ -24,17 +24,30 @@ import {
   apiOk,
   apiError,
   apiUnauthorized,
+  apiForbidden,
   apiNotFound,
   apiServerError,
 } from "@/lib/utils/api-response";
+import {
+  ActiveRole,
+  PermissionAction,
+  can,
+  readableRecord,
+  resolveRole,
+  writableData,
+} from "@/lib/runtime/permissions";
 import { AppConfig, EntityConfig } from "@/types/config.types";
 
 type Params = { params: { appId: string; entity: string } };
 
 // ── Shared: resolve app + entity config ───────────────────────────────────────
 
-async function resolveContext(appId: string, entityName: string, userId: string) {
-  const app = await getApp(appId, userId);
+async function resolveContext(
+  appId: string,
+  entityName: string,
+  user: { id: string; email?: string | null }
+) {
+  const app = await getApp(appId, user.id);
   if (!app) return { error: apiNotFound("App") };
 
   const parsed = parseConfig(app.config);
@@ -54,7 +67,29 @@ async function resolveContext(appId: string, entityName: string, userId: string)
     };
   }
 
-  return { config: parsed.config as AppConfig, entity };
+  // The role is resolved here, server-side, from the session — the client's
+  // copy is only ever used for rendering.
+  const role = resolveRole(parsed.config, {
+    id: user.id,
+    email: user.email,
+    isOwner: app.userId === user.id,
+  });
+
+  return { config: parsed.config as AppConfig, entity, role };
+}
+
+/** 403 unless the role may perform `action` on this entity. */
+function denyUnless(
+  entity: EntityConfig,
+  role: ActiveRole,
+  action: PermissionAction
+) {
+  if (can(entity, role, action)) return null;
+  return apiForbidden(
+    `Your role ${role.name ? `("${role.name}") ` : ""}cannot ${action} ${
+      entity.label ?? entity.name
+    } records`
+  );
 }
 
 // ── GET ───────────────────────────────────────────────────────────────────────
@@ -65,16 +100,27 @@ export async function GET(req: NextRequest, { params }: Params) {
     if (!session?.user?.id) return apiUnauthorized();
 
     const { appId, entity: entityName } = params;
-    const ctx = await resolveContext(appId, entityName, session.user.id);
+    const ctx = await resolveContext(appId, entityName, {
+      id: session.user.id,
+      email: session.user.email,
+    });
     if ("error" in ctx) return ctx.error;
+
+    const denied = denyUnless(ctx.entity, ctx.role, "read");
+    if (denied) return denied;
 
     const url = new URL(req.url);
     const id = url.searchParams.get("id");
 
+    // Fields this role cannot see are stripped before responding, so hiding
+    // them is not merely a UI decision.
+    const visible = (record: Record<string, unknown>) =>
+      readableRecord(ctx.config, ctx.entity, ctx.role, record);
+
     if (id) {
       const record = await getEntityRecord(appId, entityName, id);
       if (!record) return apiNotFound("Record");
-      return apiOk(record);
+      return apiOk(visible(record));
     }
 
     const page = parseInt(url.searchParams.get("page") ?? "1");
@@ -94,7 +140,7 @@ export async function GET(req: NextRequest, { params }: Params) {
       filter,
     });
 
-    return apiOk(result);
+    return apiOk({ ...result, records: result.records.map(visible) });
   } catch (err) {
     console.error("[RUNTIME GET]", err);
     return apiServerError();
@@ -109,7 +155,10 @@ export async function POST(req: NextRequest, { params }: Params) {
     if (!session?.user?.id) return apiUnauthorized();
 
     const { appId, entity: entityName } = params;
-    const ctx = await resolveContext(appId, entityName, session.user.id);
+    const ctx = await resolveContext(appId, entityName, {
+      id: session.user.id,
+      email: session.user.email,
+    });
     if ("error" in ctx) return ctx.error;
 
     let body: unknown;
@@ -119,6 +168,9 @@ export async function POST(req: NextRequest, { params }: Params) {
       return apiError("Request body must be valid JSON", 400);
     }
 
+    const denied = denyUnless(ctx.entity, ctx.role, "create");
+    if (denied) return denied;
+
     const validation = await validateEntityRecord(body, ctx.entity, {
       appId,
       entity: entityName,
@@ -127,8 +179,17 @@ export async function POST(req: NextRequest, { params }: Params) {
       return apiError("Validation failed", 400, validation.fieldErrors);
     }
 
-    const record = await createEntityRecord(appId, entityName, validation.data!);
-    return apiOk(record, 201);
+    // Values for fields this role cannot write are discarded, not trusted.
+    const data = writableData(
+      ctx.config,
+      ctx.entity,
+      ctx.role,
+      validation.data!,
+      "create"
+    );
+
+    const record = await createEntityRecord(appId, entityName, data);
+    return apiOk(readableRecord(ctx.config, ctx.entity, ctx.role, record), 201);
   } catch (err) {
     console.error("[RUNTIME POST]", err);
     return apiServerError();
@@ -146,7 +207,10 @@ export async function PUT(req: NextRequest, { params }: Params) {
     const id = new URL(req.url).searchParams.get("id");
     if (!id) return apiError("Query param ?id= is required", 400);
 
-    const ctx = await resolveContext(appId, entityName, session.user.id);
+    const ctx = await resolveContext(appId, entityName, {
+      id: session.user.id,
+      email: session.user.email,
+    });
     if ("error" in ctx) return ctx.error;
 
     let body: unknown;
@@ -155,6 +219,9 @@ export async function PUT(req: NextRequest, { params }: Params) {
     } catch {
       return apiError("Request body must be valid JSON", 400);
     }
+
+    const denied = denyUnless(ctx.entity, ctx.role, "update");
+    if (denied) return denied;
 
     // The record keeps its own value where a field is marked unique.
     const validation = await validateEntityRecord(body, ctx.entity, {
@@ -170,11 +237,11 @@ export async function PUT(req: NextRequest, { params }: Params) {
       appId,
       entityName,
       id,
-      validation.data!
+      writableData(ctx.config, ctx.entity, ctx.role, validation.data!, "update")
     );
     if (!updated) return apiNotFound("Record");
 
-    return apiOk(updated);
+    return apiOk(readableRecord(ctx.config, ctx.entity, ctx.role, updated));
   } catch (err) {
     console.error("[RUNTIME PUT]", err);
     return apiServerError();
@@ -192,8 +259,14 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     const id = new URL(req.url).searchParams.get("id");
     if (!id) return apiError("Query param ?id= is required", 400);
 
-    const ctx = await resolveContext(appId, entityName, session.user.id);
+    const ctx = await resolveContext(appId, entityName, {
+      id: session.user.id,
+      email: session.user.email,
+    });
     if ("error" in ctx) return ctx.error;
+
+    const denied = denyUnless(ctx.entity, ctx.role, "delete");
+    if (denied) return denied;
 
     const deleted = await deleteEntityRecord(appId, entityName, id);
     if (!deleted) return apiNotFound("Record");

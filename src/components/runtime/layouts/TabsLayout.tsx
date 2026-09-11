@@ -5,10 +5,11 @@ import { useState } from "react";
 import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { getComponent } from "../ComponentRegistry";
 import { ErrorBoundary } from "../ErrorBoundary";
+import type { ActiveRole } from "@/lib/runtime/permissions";
 
-interface Props { page: PageConfig; entity?: EntityConfig; appId: string; config: AppConfig; slug?: string[]; recordId?: string; }
+interface Props { page: PageConfig; entity?: EntityConfig; appId: string; config: AppConfig; slug?: string[]; recordId?: string; role?: ActiveRole; }
 
-export function TabsLayout({ page, entity, appId, config, slug, recordId }: Props) {
+export function TabsLayout({ page, entity, appId, config, slug, recordId, role }: Props) {
   const components = page.components ?? [];
   const [activeTab, setActiveTab] = useState(0);
 
@@ -43,7 +44,7 @@ export function TabsLayout({ page, entity, appId, config, slug, recordId }: Prop
 
       {/* Active tab content */}
       <ErrorBoundary componentType={active.type}>
-        <Comp page={page} entity={compEntity} appId={appId} config={config} slug={slug} recordId={recordId} {...(active.props ?? {})} />
+        <Comp page={page} entity={compEntity} appId={appId} config={config} slug={slug} recordId={recordId} role={role} {...(active.props ?? {})} />
       </ErrorBoundary>
     </div>
   );

@@ -12,6 +12,13 @@ import {
   recordLabel,
   relationTarget,
 } from "@/lib/runtime/relations";
+import {
+  ActiveRole,
+  FULL_ACCESS_ROLE,
+  can,
+  canResolveRelation,
+  fieldAccess,
+} from "@/lib/runtime/permissions";
 
 interface Props {
   appId: string;
@@ -23,6 +30,7 @@ interface Props {
   /** Which hasMany field to render; the first one when omitted. */
   field?: FieldConfig | string;
   page?: PageConfig;
+  role?: ActiveRole;
 }
 
 /**
@@ -32,24 +40,53 @@ interface Props {
  * Registered as "relatedList", so a config can also place it directly:
  *   { "type": "relatedList", "props": { "field": "employees" } }
  */
-export function RelatedList({ appId, config, entity, recordId, field }: Props) {
+export function RelatedList({
+  appId,
+  config,
+  entity,
+  recordId,
+  field,
+  role = FULL_ACCESS_ROLE,
+}: Props) {
   const relation = resolveField(entity, field);
   const target = relation ? relationTarget(relation, config.entities) : undefined;
+
+  // A relation this role may not see, or whose target it may not read, is not
+  // resolved and not fetched.
+  const permitted = Boolean(
+    relation &&
+      entity &&
+      fieldAccess(entity, relation, role).visible &&
+      canResolveRelation(config, relation, role) &&
+      can(target, role, "read")
+  );
   const inverse =
     entity && target && relation
       ? findInverseField(entity, target, relation)
       : undefined;
 
-  const { data, isLoading, error } = useRuntimeData(appId, target?.name, {
-    limit: 50,
-    filterField: inverse?.name,
-    filterValue: recordId,
-  });
+  const { data, isLoading, error } = useRuntimeData(
+    permitted ? appId : undefined,
+    target?.name,
+    {
+      limit: 50,
+      filterField: inverse?.name,
+      filterValue: recordId,
+    }
+  );
 
   if (!entity || !relation || !target) {
     return (
       <p className="text-sm text-gray-400">
         No hasMany relation to show here.
+      </p>
+    );
+  }
+
+  if (!permitted) {
+    return (
+      <p className="text-sm text-gray-400">
+        Not available to your role.
       </p>
     );
   }

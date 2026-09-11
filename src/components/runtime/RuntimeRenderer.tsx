@@ -4,15 +4,27 @@
 import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { getComponent } from "./ComponentRegistry";
 import { ErrorBoundary } from "./ErrorBoundary";
+import {
+  ActiveRole,
+  FULL_ACCESS_ROLE,
+  canSeePage,
+} from "@/lib/runtime/permissions";
 
 interface RuntimeRendererProps {
   config: AppConfig;
   /** URL segments after /runtime/[appId]/ — e.g. ["contacts"] or ["contacts","new"] */
   slug: string[];
   appId: string;
+  /** Resolved server-side; defaults to full access for callers without roles. */
+  role?: ActiveRole;
 }
 
-export function RuntimeRenderer({ config, slug, appId }: RuntimeRendererProps) {
+export function RuntimeRenderer({
+  config,
+  slug,
+  appId,
+  role = FULL_ACCESS_ROLE,
+}: RuntimeRendererProps) {
   // Build the current path from the slug
   const path = "/" + (slug?.join("/") ?? "");
 
@@ -47,6 +59,22 @@ export function RuntimeRenderer({ config, slug, appId }: RuntimeRendererProps) {
     );
   }
 
+  // ── Permission gate ────────────────────────────────────────────────────────
+  // Hiding the nav link is not enough: a typed URL lands here too. The API
+  // refuses the data either way.
+  if (!canSeePage(config, page, role)) {
+    return (
+      <div className="flex flex-col items-center justify-center min-h-[40vh] text-center">
+        <p className="text-3xl mb-3">🔒</p>
+        <p className="text-lg font-medium text-gray-700">Not available to you</p>
+        <p className="text-sm mt-1 text-gray-500">
+          Your role{role.name ? ` ("${role.label ?? role.name}")` : ""} does not
+          have access to this page.
+        </p>
+      </div>
+    );
+  }
+
   // ── Component resolution ───────────────────────────────────────────────────
   const Component = getComponent(page.layout);
 
@@ -59,6 +87,7 @@ export function RuntimeRenderer({ config, slug, appId }: RuntimeRendererProps) {
     slug,
     // Trailing segment beyond the page's own path — the record a detail page shows.
     recordId: resolveRecordId(page, path),
+    role,
   };
 
   return (

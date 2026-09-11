@@ -4,20 +4,44 @@
 import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { useRuntimeData } from "@/hooks/useRuntimeData";
 import { StatCard } from "./StatCard";
+import {
+  ActiveRole,
+  FULL_ACCESS_ROLE,
+  readableEntities,
+} from "@/lib/runtime/permissions";
 
 interface Props {
   page: PageConfig;
   entity?: EntityConfig;
   appId: string;
   config: AppConfig;
+  role?: ActiveRole;
 }
 
-export function DynamicDashboard({ config, appId }: Props) {
+export function DynamicDashboard({
+  config,
+  appId,
+  role = FULL_ACCESS_ROLE,
+}: Props) {
+  // Counting records is reading them: only summarise what this role may see.
+  const entities = readableEntities(config, role);
+
+  if (entities.length === 0) {
+    return (
+      <div className="p-4 rounded-lg border border-dashed border-gray-300 bg-gray-50">
+        <p className="text-sm text-gray-600">
+          Your role{role.name ? ` ("${role.label ?? role.name}")` : ""} cannot
+          view any of this app&apos;s data.
+        </p>
+      </div>
+    );
+  }
+
   return (
     <div className="space-y-8">
       {/* Stats row — one card per entity */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
-        {config.entities.map((entity) => (
+        {entities.map((entity) => (
           <EntityStatCard
             key={entity.name}
             appId={appId}
@@ -28,7 +52,7 @@ export function DynamicDashboard({ config, appId }: Props) {
 
       {/* Entity summary tables */}
       <div className="space-y-6">
-        {config.entities.map((entity) => (
+        {entities.map((entity) => (
           <EntityRecentTable
             key={entity.name}
             appId={appId}

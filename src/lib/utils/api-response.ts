@@ -16,6 +16,8 @@ export function apiError(message: string, status = 400, details?: unknown) {
 
 // Aliases for common statuses
 export const apiUnauthorized = () => apiError("Unauthorized", 401);
+export const apiForbidden = (msg = "You do not have permission to do that") =>
+  apiError(msg, 403);
 export const apiNotFound = (entity = "Resource") =>
   apiError(`${entity} not found`, 404);
 export const apiServerError = (msg = "Internal server error") =>

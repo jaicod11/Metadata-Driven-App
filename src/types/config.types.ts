@@ -21,6 +21,36 @@ export type FieldType =
  */
 export type RelationType = "belongsTo" | "hasMany";
 
+// ─── Roles & permissions ──────────────────────────────────────────────────────
+
+/**
+ * A role declared by the config. Membership is config-driven — there is no role
+ * column on the user — so a role names the users that hold it, or is marked as
+ * the default for everyone else.
+ */
+export interface RoleConfig {
+  name: string;
+  label?: string;
+  /** Emails (or user ids) of the people holding this role. */
+  users?: string[];
+  /** Role given to any signed-in user not listed on another role. */
+  default?: boolean;
+}
+
+/** What a role may do with an entity. An omitted verb is denied. */
+export interface EntityPermissionRule {
+  read?: boolean;
+  create?: boolean;
+  update?: boolean;
+  delete?: boolean;
+}
+
+/** Per-field override for a role. Both default to true. */
+export interface FieldPermissionRule {
+  visible?: boolean;
+  editable?: boolean;
+}
+
 export interface SelectOption {
   label: string;
   value: string;
@@ -66,6 +96,10 @@ export interface FieldConfig {
   /** hasMany only: the belongsTo field on the target that points back here.
    *  Inferred from the target's fields when omitted. */
   foreignKey?: string;
+
+  /** Per-role overrides, keyed by role name. Unlisted roles keep the default
+   *  (visible and editable). */
+  permissions?: Record<string, FieldPermissionRule>;
 }
 
 // ─── Entity ───────────────────────────────────────────────────────────────────
@@ -74,6 +108,9 @@ export interface EntityConfig {
   name: string;
   label?: string;
   fields: FieldConfig[];
+  /** Keyed by role name. An entity with no map is open to every declared role;
+   *  once a map exists, a role missing from it gets nothing. */
+  permissions?: Record<string, EntityPermissionRule>;
 }
 
 // ─── Layout & Page ────────────────────────────────────────────────────────────
@@ -163,6 +200,9 @@ export interface AppConfig {
   description?: string;
   version?: string;
   theme?: ThemeConfig;
+  /** Declared roles. With none, every user has full access — see
+   *  src/lib/runtime/permissions.ts. */
+  roles?: RoleConfig[];
   entities: EntityConfig[];
   pages: PageConfig[];
   workflows?: WorkflowConfig[];

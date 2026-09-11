@@ -8,6 +8,7 @@ import { requireAuth } from "@/lib/auth/session";
 import { getApp } from "@/lib/db/queries/apps";
 import { parseConfig } from "@/lib/runtime/schema-parser";
 import { RuntimeRenderer } from "@/components/runtime/RuntimeRenderer";
+import { resolveRole, visiblePages } from "@/lib/runtime/permissions";
 
 interface PageProps {
   params: { appId: string; slug?: string[] };
@@ -53,6 +54,19 @@ export default async function RuntimePage({ params }: PageProps) {
 
   const slug = params.slug ?? [];
 
+  // Resolved server-side from the session. The renderer uses it to decide what
+  // to draw; the API re-resolves it on every request and enforces it there.
+  const role = resolveRole(parsed.config, {
+    id: user.id,
+    email: user.email,
+    isOwner: app.userId === user.id,
+  });
+
+  // Pages whose entity this role cannot read never appear in navigation.
+  const navPages = visiblePages(parsed.config, role).filter(
+    (p) => p.layout !== "detail"
+  );
+
   return (
     <div className="min-h-screen bg-gray-50">
       {/* Top bar */}
@@ -66,6 +80,11 @@ export default async function RuntimePage({ params }: PageProps) {
           </a>
           <span className="text-gray-300">/</span>
           <span className="text-sm font-semibold text-gray-800">{app.name}</span>
+          {role.kind === "role" && (
+            <span className="text-xs text-gray-500 px-2 py-0.5 bg-gray-100 rounded-full border border-gray-200">
+              {role.label ?? role.name}
+            </span>
+          )}
         </div>
 
         {/* Warnings badge */}
@@ -85,11 +104,11 @@ export default async function RuntimePage({ params }: PageProps) {
         )}
       </header>
 
-      {/* App nav — generated from config.pages. Detail pages are reached from a
+      {/* App nav — the pages this role may see. Detail pages are reached from a
           list row, not the nav: without a record id they have nothing to show. */}
-      {parsed.config.pages.filter((p) => p.layout !== "detail").length > 1 && (
+      {navPages.length > 1 && (
         <nav className="bg-white border-b border-gray-100 px-6 flex gap-1">
-          {parsed.config.pages.filter((p) => p.layout !== "detail").map((page) => {
+          {navPages.map((page) => {
             const href = `/runtime/${params.appId}${page.path}`;
             const currentPath = "/" + slug.join("/");
             const isActive = currentPath === page.path || currentPath.startsWith(page.path + "/");
@@ -116,6 +135,7 @@ export default async function RuntimePage({ params }: PageProps) {
           config={parsed.config}
           slug={slug}
           appId={params.appId}
+          role={role}
         />
       </main>
     </div>

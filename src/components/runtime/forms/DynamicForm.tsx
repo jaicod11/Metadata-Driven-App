@@ -7,6 +7,13 @@ import { FieldRenderer } from "./FieldRenderer";
 import { revalidateEntity } from "@/hooks/useRuntimeData";
 import { FieldError, validateEntityData } from "@/lib/runtime/validator";
 import { isHasMany } from "@/lib/runtime/relations";
+import {
+  ActiveRole,
+  FULL_ACCESS_ROLE,
+  can,
+  fieldAccess,
+  visibleFields,
+} from "@/lib/runtime/permissions";
 
 interface Props {
   page: PageConfig;
@@ -17,6 +24,7 @@ interface Props {
   initialData?: Record<string, unknown>;
   recordId?: string;
   onSuccess?: (record: Record<string, unknown>) => void;
+  role?: ActiveRole;
 }
 
 type SubmitStatus = "idle" | "loading" | "success" | "error";
@@ -47,6 +55,7 @@ export function DynamicForm({
   initialData,
   recordId,
   onSuccess,
+  role = FULL_ACCESS_ROLE,
 }: Props) {
   const [formData, setFormData] = useState<Record<string, unknown>>(
     initialData ?? {}
@@ -154,16 +163,21 @@ export function DynamicForm({
   };
 
   // hasMany has no input: it is the inverse of a belongsTo on the target entity.
-  const visibleFields = entity.fields.filter((f) => !f.hidden && !isHasMany(f));
+  // visibleFields() also drops fields this role may not see, and relations whose
+  // target it may not read — those must not render or fetch at all.
+  const fields = visibleFields(config, entity, role).filter((f) => !isHasMany(f));
+  const writeAction = recordId ? "update" : "create";
+  const mayWrite = can(entity, role, writeAction);
 
   return (
     <form onSubmit={handleSubmit} noValidate className="space-y-5 max-w-2xl">
-      {visibleFields.map((field) => (
+      {fields.map((field) => (
         <FieldRenderer
           key={field.name}
           field={field}
           appId={appId}
           config={config}
+          editable={mayWrite && fieldAccess(entity, field, role).editable}
           value={formData[field.name] ?? field.defaultValue ?? ""}
           error={errors[field.name]}
           onChange={(val) => {
@@ -196,8 +210,17 @@ export function DynamicForm({
         </div>
       )}
 
+      {!mayWrite && (
+        <div className="p-3 rounded-lg border border-gray-200 bg-gray-50">
+          <p className="text-sm text-gray-600">
+            Your role{role.name ? ` ("${role.label ?? role.name}")` : ""} can view
+            these {recordId ? "details" : "fields"} but not {writeAction} them.
+          </p>
+        </div>
+      )}
+
       {/* Actions */}
-      <div className="flex items-center gap-3 pt-1">
+      <div className={`flex items-center gap-3 pt-1 ${mayWrite ? "" : "hidden"}`}>
         <button
           type="submit"
           disabled={status === "loading"}

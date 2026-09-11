@@ -7,6 +7,12 @@ import { ErrorBoundary } from "../ErrorBoundary";
 import { RelationValue } from "../relations/RelationValue";
 import { RelatedList } from "../relations/RelatedList";
 import { isBelongsTo, isHasMany } from "@/lib/runtime/relations";
+import {
+  ActiveRole,
+  FULL_ACCESS_ROLE,
+  can,
+  visibleFields,
+} from "@/lib/runtime/permissions";
 
 interface Props {
   page: PageConfig;
@@ -15,12 +21,20 @@ interface Props {
   config: AppConfig;
   /** Trailing URL segment: /runtime/:appId/employees/view/:recordId */
   recordId?: string;
+  role?: ActiveRole;
 }
 
 /** One record: its stored fields, then a list per hasMany relation. */
-export function DetailView({ entity, appId, config, recordId }: Props) {
+export function DetailView({
+  entity,
+  appId,
+  config,
+  recordId,
+  role = FULL_ACCESS_ROLE,
+}: Props) {
+  const mayRead = can(entity, role, "read");
   const { record, isLoading, error } = useRuntimeRecord(
-    appId,
+    mayRead ? appId : undefined,
     entity?.name,
     recordId
   );
@@ -32,6 +46,17 @@ export function DetailView({ entity, appId, config, recordId }: Props) {
           No entity configured for this detail page. Add an{" "}
           <code className="font-mono text-xs bg-amber-100 px-1 rounded">entity</code>{" "}
           key to this page in your config.
+        </p>
+      </div>
+    );
+  }
+
+  if (!mayRead) {
+    return (
+      <div className="p-4 rounded-lg border border-dashed border-gray-300 bg-gray-50">
+        <p className="text-sm text-gray-600">
+          Your role{role.name ? ` ("${role.label ?? role.name}")` : ""} cannot
+          view {entity.label ?? entity.name} records.
         </p>
       </div>
     );
@@ -67,8 +92,11 @@ export function DetailView({ entity, appId, config, recordId }: Props) {
     );
   }
 
-  const storedFields = entity.fields.filter((f) => !f.hidden && !isHasMany(f));
-  const hasManyFields = entity.fields.filter((f) => !f.hidden && isHasMany(f));
+  // Both lists are already filtered to what this role may see, including
+  // relations whose target entity it may not read.
+  const permitted = visibleFields(config, entity, role);
+  const storedFields = permitted.filter((f) => !isHasMany(f));
+  const hasManyFields = permitted.filter(isHasMany);
 
   return (
     <ErrorBoundary componentType="detail">
@@ -90,6 +118,7 @@ export function DetailView({ entity, appId, config, recordId }: Props) {
                     field={field}
                     appId={appId}
                     config={config}
+                    role={role}
                   />
                 ) : (
                   formatValue(record[field.name], field)
@@ -112,6 +141,7 @@ export function DetailView({ entity, appId, config, recordId }: Props) {
                 entity={entity}
                 recordId={recordId}
                 field={field}
+                role={role}
               />
             </ErrorBoundary>
           </section>

@@ -1,6 +1,7 @@
 // src/types/runtime.types.ts
 
 import { AppConfig, EntityConfig, PageConfig } from "./config.types";
+import type { ActiveRole } from "@/lib/runtime/permissions";
 
 /** Props passed into every runtime-rendered component */
 export interface ComponentProps {
@@ -12,6 +13,8 @@ export interface ComponentProps {
   slug?: string[];
   /** Trailing segment beyond the page's own path — the record a detail page shows. */
   recordId?: string;
+  /** Resolved server-side. Used for rendering only; the API enforces its own. */
+  role?: ActiveRole;
 }
 
 /** Current render context — what page + entity is active */

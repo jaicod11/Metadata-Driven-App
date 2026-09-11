@@ -10,6 +10,11 @@ import {
   recordLabel,
   relationTarget,
 } from "@/lib/runtime/relations";
+import {
+  ActiveRole,
+  FULL_ACCESS_ROLE,
+  canResolveRelation,
+} from "@/lib/runtime/permissions";
 
 interface Props {
   /** The stored value of a belongsTo field: the target record's id. */
@@ -17,6 +22,7 @@ interface Props {
   field: FieldConfig;
   appId: string;
   config: AppConfig;
+  role?: ActiveRole;
 }
 
 /**
@@ -26,13 +32,24 @@ interface Props {
  * Every instance shares one SWR key per target entity, so a table column of
  * these costs a single request rather than one per row.
  */
-export function RelationValue({ value, field, appId, config }: Props) {
+export function RelationValue({
+  value,
+  field,
+  appId,
+  config,
+  role = FULL_ACCESS_ROLE,
+}: Props) {
   const target = relationTarget(field, config.entities);
-  const { data, isLoading } = useRuntimeData(appId, target?.name, {
-    limit: 100,
-  });
+  // Never resolve a relation whose target this role cannot read.
+  const permitted = canResolveRelation(config, field, role);
 
-  if (!target) return <span className="text-gray-400">—</span>;
+  const { data, isLoading } = useRuntimeData(
+    permitted ? appId : undefined,
+    target?.name,
+    { limit: 100 }
+  );
+
+  if (!target || !permitted) return <span className="text-gray-400">—</span>;
   if (value === null || value === undefined || value === "") {
     return <span className="text-gray-400">—</span>;
   }
