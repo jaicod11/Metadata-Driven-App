@@ -1,7 +1,7 @@
 // src/components/runtime/forms/FieldRenderer.tsx
 "use client";
 
-import { FieldConfig } from "@/types/config.types";
+import { AppConfig, FieldConfig } from "@/types/config.types";
 import { TextField }    from "./fields/TextField";
 import { NumberField }  from "./fields/NumberField";
 import { SelectField }  from "./fields/SelectField";
@@ -9,17 +9,25 @@ import { CheckboxField }from "./fields/CheckboxField";
 import { DateField }    from "./fields/DateField";
 import { FileField }    from "./fields/FileField";
 import { UnknownField } from "./fields/UnknownField";
+import { RelationField } from "./fields/RelationField";
+import { isHasMany } from "@/lib/runtime/relations";
 
 interface Props {
   field: FieldConfig;
   value: unknown;
   error?: string;
   onChange: (value: unknown) => void;
+  /** Relation inputs need these to load the target entity's records. */
+  appId?: string;
+  config?: AppConfig;
 }
 
-export function FieldRenderer({ field, value, error, onChange }: Props) {
+export function FieldRenderer({ field, value, error, onChange, appId, config }: Props) {
   // Skip hidden fields entirely
   if (field.hidden) return null;
+
+  // hasMany is not an input — children point back at this record instead.
+  if (isHasMany(field)) return null;
 
   const fieldProps = { field, value, error, onChange };
 
@@ -40,6 +48,8 @@ export function FieldRenderer({ field, value, error, onChange }: Props) {
         return <DateField {...fieldProps} />;
       case "file":
         return <FileField {...fieldProps} />;
+      case "relation":
+        return <RelationField {...fieldProps} appId={appId} config={config} />;
       default:
         return <UnknownField {...fieldProps} />;
     }

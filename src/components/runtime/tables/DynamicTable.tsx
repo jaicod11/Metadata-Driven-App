@@ -6,6 +6,13 @@ import { AppConfig, EntityConfig, FieldType, PageConfig } from "@/types/config.t
 import { useRuntimeData } from "@/hooks/useRuntimeData";
 import { TableActions } from "./TableActions";
 import { ErrorBoundary } from "../ErrorBoundary";
+import { RelationValue } from "../relations/RelationValue";
+import {
+  detailHref,
+  findDetailPage,
+  isBelongsTo,
+  isHasMany,
+} from "@/lib/runtime/relations";
 
 interface Props {
   page: PageConfig;
@@ -14,7 +21,7 @@ interface Props {
   config: AppConfig;
 }
 
-export function DynamicTable({ page, entity, appId }: Props) {
+export function DynamicTable({ page, entity, appId, config }: Props) {
   const [currentPage, setCurrentPage] = useState(1);
   const { data, isLoading, error, mutate } = useRuntimeData(
     appId,
@@ -60,7 +67,9 @@ export function DynamicTable({ page, entity, appId }: Props) {
 
   const records: Record<string, unknown>[] = data?.records ?? [];
   const meta = data?.meta;
-  const visibleFields = entity.fields.filter((f) => !f.hidden);
+  // hasMany holds no value on this record — it lives on the detail page.
+  const visibleFields = entity.fields.filter((f) => !f.hidden && !isHasMany(f));
+  const detailPage = findDetailPage(config, entity.name);
 
   const handleDelete = async (id: string) => {
     await fetch(`/api/runtime/${appId}/${entity.name}?id=${id}`, {
@@ -113,9 +122,22 @@ export function DynamicTable({ page, entity, appId }: Props) {
                       <td
                         key={f.name}
                         className="px-4 py-3 text-gray-700 max-w-[240px] truncate"
-                        title={formatCellValue(record[f.name], f.type)}
+                        title={
+                          isBelongsTo(f)
+                            ? undefined
+                            : formatCellValue(record[f.name], f.type)
+                        }
                       >
-                        {formatCellValue(record[f.name], f.type)}
+                        {isBelongsTo(f) ? (
+                          <RelationValue
+                            value={record[f.name]}
+                            field={f}
+                            appId={appId}
+                            config={config}
+                          />
+                        ) : (
+                          formatCellValue(record[f.name], f.type)
+                        )}
                       </td>
                     ))}
                     <td className="px-4 py-3">
@@ -124,6 +146,11 @@ export function DynamicTable({ page, entity, appId }: Props) {
                         appId={appId}
                         entity={entity.name}
                         onDelete={handleDelete}
+                        detailHref={
+                          detailPage
+                            ? detailHref(appId, detailPage, String(record.id))
+                            : undefined
+                        }
                       />
                     </td>
                   </tr>

@@ -79,7 +79,20 @@ export async function GET(req: NextRequest, { params }: Params) {
 
     const page = parseInt(url.searchParams.get("page") ?? "1");
     const limit = parseInt(url.searchParams.get("limit") ?? "20");
-    const result = await listEntityRecords(appId, entityName, { page, limit });
+
+    // ?filterField=&filterValue= — how a hasMany list finds its children.
+    const filterField = url.searchParams.get("filterField");
+    const filterValue = url.searchParams.get("filterValue");
+    const filter =
+      filterField && filterValue !== null
+        ? { field: filterField, value: filterValue }
+        : undefined;
+
+    const result = await listEntityRecords(appId, entityName, {
+      page,
+      limit,
+      filter,
+    });
 
     return apiOk(result);
   } catch (err) {

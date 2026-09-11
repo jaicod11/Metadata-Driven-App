@@ -18,15 +18,18 @@ import {
   ParsedConfig,
   ConfigError,
   ConfigWarning,
+  RelationType,
   WorkflowConfig,
 } from "@/types/config.types";
 import {
   DEFAULT_CONFIG_VERSION,
   FIELD_TYPES,
   LAYOUT_TYPES,
+  RELATION_TYPES,
   TRIGGER_TYPES,
   validateAppConfig,
 } from "@/lib/config-schema";
+import { findInverseField, isHasMany, isRelation } from "@/lib/runtime/relations";
 
 // ─── Public API ───────────────────────────────────────────────────────────────
 
@@ -76,6 +79,11 @@ export function parseConfig(raw: unknown): ParsedConfig {
       if (parsed) workflows.push(parsed);
     });
   }
+
+  // ── relations ─────────────────────────────────────────────────────────────
+  // Targets are verified by the gate; what's left are the soft references that
+  // degrade to a warning.
+  checkRelations(entities, warnings);
 
   const config: AppConfig = {
     name: appName,
@@ -194,6 +202,26 @@ function parseField(
     type = data.type as FieldType;
   }
 
+  // ── relation: kind falls back like every other unknown enum ───────────────
+  let relationType: RelationType | undefined;
+  if (type === "relation") {
+    if (!data.relationType) {
+      relationType = "belongsTo";
+      warnings.push({
+        path: `${path}.relationType`,
+        message: `Relation "${fieldName}" in "${entityName}" has no relationType — defaulting to "belongsTo"`,
+      });
+    } else if (!RELATION_TYPES.includes(data.relationType as RelationType)) {
+      relationType = "belongsTo";
+      warnings.push({
+        path: `${path}.relationType`,
+        message: `Unknown relationType "${data.relationType}" on "${fieldName}" — defaulting to "belongsTo"`,
+      });
+    } else {
+      relationType = data.relationType as RelationType;
+    }
+  }
+
   // ── options: required for select, warn otherwise ──────────────────────────
   if (type === "select" && !Array.isArray(data.options)) {
     warnings.push({
@@ -226,7 +254,57 @@ function parseField(
       data.validation && typeof data.validation === "object" && !Array.isArray(data.validation)
         ? (data.validation as FieldConfig["validation"])
         : undefined,
+    // Relation wiring — the gate guarantees "target" names a defined entity.
+    target:
+      type === "relation" && typeof data.target === "string"
+        ? data.target.trim()
+        : undefined,
+    relationType,
+    displayField:
+      type === "relation" && typeof data.displayField === "string"
+        ? data.displayField.trim()
+        : undefined,
+    foreignKey:
+      type === "relation" && typeof data.foreignKey === "string"
+        ? data.foreignKey.trim()
+        : undefined,
   };
+}
+
+/**
+ * Relation references that have a sensible fallback, so they warn instead of
+ * blocking: a displayField that isn't a field of the target, and a hasMany
+ * whose inverse belongsTo can't be found (the list renders empty).
+ */
+function checkRelations(entities: EntityConfig[], warnings: ConfigWarning[]) {
+  entities.forEach((entity, ei) => {
+    entity.fields.forEach((field, fi) => {
+      if (!isRelation(field)) return;
+
+      const path = `entities[${ei}].fields[${fi}]`;
+      const target = entities.find((e) => e.name === field.target);
+      if (!target) return; // already an error from the gate
+
+      if (
+        field.displayField &&
+        !target.fields.some((f) => f.name === field.displayField)
+      ) {
+        warnings.push({
+          path: `${path}.displayField`,
+          message: `Relation "${field.name}" wants to display "${field.displayField}", which entity "${target.name}" does not define — falling back to its first text field`,
+        });
+      }
+
+      if (isHasMany(field) && !findInverseField(entity, target, field)) {
+        warnings.push({
+          path: `${path}.foreignKey`,
+          message:
+            `Relation "${field.name}" is hasMany but no field of "${target.name}" points back at "${entity.name}" — ` +
+            `add a belongsTo field there, or name it with "foreignKey". The list will render empty.`,
+        });
+      }
+    });
+  });
 }
 
 function parsePage(

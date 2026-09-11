@@ -85,10 +85,11 @@ export default async function RuntimePage({ params }: PageProps) {
         )}
       </header>
 
-      {/* App nav — generated from config.pages */}
-      {parsed.config.pages.length > 1 && (
+      {/* App nav — generated from config.pages. Detail pages are reached from a
+          list row, not the nav: without a record id they have nothing to show. */}
+      {parsed.config.pages.filter((p) => p.layout !== "detail").length > 1 && (
         <nav className="bg-white border-b border-gray-100 px-6 flex gap-1">
-          {parsed.config.pages.map((page) => {
+          {parsed.config.pages.filter((p) => p.layout !== "detail").map((page) => {
             const href = `/runtime/${params.appId}${page.path}`;
             const currentPath = "/" + slug.join("/");
             const isActive = currentPath === page.path || currentPath.startsWith(page.path + "/");

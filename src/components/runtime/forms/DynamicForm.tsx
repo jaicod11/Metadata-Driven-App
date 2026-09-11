@@ -6,6 +6,7 @@ import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { FieldRenderer } from "./FieldRenderer";
 import { revalidateEntity } from "@/hooks/useRuntimeData";
 import { FieldError, validateEntityData } from "@/lib/runtime/validator";
+import { isHasMany } from "@/lib/runtime/relations";
 
 interface Props {
   page: PageConfig;
@@ -42,6 +43,7 @@ export function DynamicForm({
   page,
   entity,
   appId,
+  config,
   initialData,
   recordId,
   onSuccess,
@@ -151,7 +153,8 @@ export function DynamicForm({
     setApiError(null);
   };
 
-  const visibleFields = entity.fields.filter((f) => !f.hidden);
+  // hasMany has no input: it is the inverse of a belongsTo on the target entity.
+  const visibleFields = entity.fields.filter((f) => !f.hidden && !isHasMany(f));
 
   return (
     <form onSubmit={handleSubmit} noValidate className="space-y-5 max-w-2xl">
@@ -159,6 +162,8 @@ export function DynamicForm({
         <FieldRenderer
           key={field.name}
           field={field}
+          appId={appId}
+          config={config}
           value={formData[field.name] ?? field.defaultValue ?? ""}
           error={errors[field.name]}
           onChange={(val) => {

@@ -11,7 +11,15 @@ export type FieldType =
   | "file"
   | "email"
   | "url"
-  | "textarea";
+  | "textarea"
+  | "relation";
+
+/**
+ * "belongsTo" stores the id of one record of the target entity on this record.
+ * "hasMany" stores nothing — it is the inverse view of a belongsTo field on the
+ * target entity, resolved by querying for children that point back here.
+ */
+export type RelationType = "belongsTo" | "hasMany";
 
 export interface SelectOption {
   label: string;
@@ -47,6 +55,17 @@ export interface FieldConfig {
   options?: SelectOption[];       // for "select" type
   validation?: FieldValidation;
   hidden?: boolean;               // hide from UI but still include in data
+
+  // ── for "relation" type ────────────────────────────────────────────────────
+  /** Name of the entity this relation points at. Must exist in the config. */
+  target?: string;
+  /** Defaults to "belongsTo". */
+  relationType?: RelationType;
+  /** Field on the target used as the label; defaults to its first text field. */
+  displayField?: string;
+  /** hasMany only: the belongsTo field on the target that points back here.
+   *  Inferred from the target's fields when omitted. */
+  foreignKey?: string;
 }
 
 // ─── Entity ───────────────────────────────────────────────────────────────────
@@ -63,6 +82,7 @@ export type LayoutType =
   | "form"
   | "table"
   | "dashboard"
+  | "detail"
   | "grid"
   | "tabs"
   | "stack";

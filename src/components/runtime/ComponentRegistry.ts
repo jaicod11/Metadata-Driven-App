@@ -16,6 +16,8 @@ import { FallbackComponent } from "./FallbackComponent";
 let _DynamicForm: ComponentType<any> | null = null;
 let _DynamicTable: ComponentType<any> | null = null;
 let _DynamicDashboard: ComponentType<any> | null = null;
+let _DetailView: ComponentType<any> | null = null;
+let _RelatedList: ComponentType<any> | null = null;
 let _GridLayout: ComponentType<any> | null = null;
 let _TabsLayout: ComponentType<any> | null = null;
 let _StackLayout: ComponentType<any> | null = null;
@@ -33,7 +35,7 @@ export function hasComponent(type: string): boolean {
   const key = type.toLowerCase();
   return (
     key in customRegistry ||
-    ["form", "table", "dashboard", "grid", "tabs", "stack"].includes(key)
+    ["form", "table", "dashboard", "detail", "relatedlist", "grid", "tabs", "stack"].includes(key)
   );
 }
 
@@ -70,6 +72,20 @@ export function getComponent(type: string): ComponentType<any> {
         _DynamicDashboard = require("./dashboards/DynamicDashboard").DynamicDashboard;
       }
       return _DynamicDashboard!;
+
+    case "detail":
+      if (!_DetailView) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        _DetailView = require("./detail/DetailView").DetailView;
+      }
+      return _DetailView!;
+
+    case "relatedlist":
+      if (!_RelatedList) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        _RelatedList = require("./relations/RelatedList").RelatedList;
+      }
+      return _RelatedList!;
 
     case "grid":
       if (!_GridLayout) {

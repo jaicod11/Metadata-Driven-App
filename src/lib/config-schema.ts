@@ -36,6 +36,7 @@ import type {
   FieldValidation,
   LayoutType,
   PageConfig,
+  RelationType,
   SelectOption,
   ThemeConfig,
   TriggerType,
@@ -51,11 +52,15 @@ import type {
 
 export const FIELD_TYPES = [
   "string", "number", "boolean", "date",
-  "select", "file", "email", "url", "textarea",
+  "select", "file", "email", "url", "textarea", "relation",
 ] as const satisfies readonly FieldType[];
 
+export const RELATION_TYPES = [
+  "belongsTo", "hasMany",
+] as const satisfies readonly RelationType[];
+
 export const LAYOUT_TYPES = [
-  "form", "table", "dashboard", "grid", "tabs", "stack",
+  "form", "table", "dashboard", "detail", "grid", "tabs", "stack",
 ] as const satisfies readonly LayoutType[];
 
 export const TRIGGER_TYPES = [
@@ -88,6 +93,7 @@ export const DEFAULT_CONFIG_VERSION = "1.0.0";
 // ─── Strict schemas (shape of a normalised AppConfig) ─────────────────────────
 
 export const fieldTypeSchema = z.enum(FIELD_TYPES);
+export const relationTypeSchema = z.enum(RELATION_TYPES);
 export const layoutTypeSchema = z.enum(LAYOUT_TYPES);
 export const triggerTypeSchema = z.enum(TRIGGER_TYPES);
 export const workflowActionTypeSchema = z.enum(WORKFLOW_ACTION_TYPES);
@@ -121,6 +127,12 @@ export const fieldSchema = z.object({
   options: z.array(selectOptionSchema).optional(),
   validation: fieldValidationSchema.optional(),
   hidden: z.boolean().optional(),
+  // Relation fields — target is checked against the entity list by
+  // relationReferenceErrors() below, which Zod alone cannot do.
+  target: z.string().optional(),
+  relationType: relationTypeSchema.optional(),
+  displayField: z.string().optional(),
+  foreignKey: z.string().optional(),
 }) satisfies z.ZodType<FieldConfig>;
 
 export const entitySchema = z.object({
@@ -296,6 +308,23 @@ const fieldInputSchema = z
         })
         .optional(),
       validation: validationInputSchema.optional(),
+      // A "relation" needs a target entity; whether that entity exists is
+      // checked by relationReferenceErrors(). An unknown relationType degrades
+      // to "belongsTo" + a warning, so only the JSON type is enforced here.
+      target: z
+        .string({ invalid_type_error: `Relation "target" must be an entity name` })
+        .optional(),
+      relationType: z
+        .string({
+          invalid_type_error: `Relation "relationType" must be a string — one of: ${RELATION_TYPES.join(", ")}`,
+        })
+        .optional(),
+      displayField: z
+        .string({ invalid_type_error: `Relation "displayField" must be a field name` })
+        .optional(),
+      foreignKey: z
+        .string({ invalid_type_error: `Relation "foreignKey" must be a field name` })
+        .optional(),
       label: forgiving,
       required: forgiving,
       placeholder: forgiving,
@@ -486,22 +515,98 @@ export function describeConfigPath(raw: unknown, path: (string | number)[]): str
   return parts.join(" → ");
 }
 
+/**
+ * Build one { path, message } error, named the way the UI renders it:
+ * `entity "employee" → field "dept" → target: ...`
+ */
+export function configError(
+  raw: unknown,
+  path: (string | number)[],
+  message: string
+): ConfigError {
+  // A top-level property is already named by its own message ("App name is
+  // required"), so only nested issues get the "entity X → field Y" prefix.
+  const location = path.length > 1 ? describeConfigPath(raw, path) : "";
+  return {
+    path: formatConfigPath(path) || "root",
+    message: location ? `${location}: ${message}` : message,
+  };
+}
+
 /** Turn a ZodError into the { path, message } pairs the UI already renders. */
 export function toConfigErrors(error: z.ZodError, raw?: unknown): ConfigError[] {
+  return dedupe(
+    error.errors.map((issue) => configError(raw, issue.path, issue.message))
+  );
+}
+
+function dedupe(errors: ConfigError[]): ConfigError[] {
   const seen = new Set<string>();
+  return errors.filter((e) => {
+    const key = `${e.path}|${e.message}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+/**
+ * Cross-reference check Zod cannot express on its own: a "relation" field must
+ * name a `target` entity, and that entity must exist in this config. Reported
+ * as a named error, like a missing entity or field name — a relation pointing
+ * nowhere has no sensible fallback, so it blocks the config rather than
+ * degrading to a warning.
+ */
+export function relationReferenceErrors(raw: unknown): ConfigError[] {
+  if (!isRecord(raw) || !Array.isArray(raw.entities)) return [];
+
+  const entities = raw.entities;
+  const known = new Set(
+    entities
+      .filter(isRecord)
+      .map((e) => (typeof e.name === "string" ? e.name.trim() : ""))
+      .filter(Boolean)
+  );
   const errors: ConfigError[] = [];
 
-  for (const issue of error.errors) {
-    const path = formatConfigPath(issue.path);
-    // A top-level property is already named by its own message ("App name is
-    // required"), so only nested issues get the "entity X → field Y" prefix.
-    const location = issue.path.length > 1 ? describeConfigPath(raw, issue.path) : "";
-    const message = location ? `${location}: ${issue.message}` : issue.message;
-    const key = `${path}|${message}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    errors.push({ path: path || "root", message });
-  }
+  entities.forEach((entity, entityIndex) => {
+    if (!isRecord(entity) || !Array.isArray(entity.fields)) return;
+
+    entity.fields.forEach((field, fieldIndex) => {
+      if (!isRecord(field) || field.type !== "relation") return;
+
+      const path = ["entities", entityIndex, "fields", fieldIndex, "target"];
+      const target = typeof field.target === "string" ? field.target.trim() : "";
+
+      if (!target) {
+        errors.push(
+          configError(
+            raw,
+            path,
+            `A "relation" field needs a "target" naming the entity it points at`
+          )
+        );
+        return;
+      }
+
+      if (!known.has(target)) {
+        errors.push(
+          configError(
+            raw,
+            path,
+            `Relation target "${target}" is not a defined entity` +
+              (known.size > 0
+                ? ` — this config defines: ${Array.from(known).join(", ")}`
+                : "")
+          )
+        );
+      }
+    });
+  });
 
   return errors;
 }
@@ -530,10 +635,18 @@ export interface ConfigValidationResult {
  */
 export function validateAppConfig(raw: unknown): ConfigValidationResult {
   const result = appConfigInputSchema.safeParse(raw);
-  if (result.success) {
-    return { success: true, data: result.data, errors: [] };
+
+  // Structural issues and dangling relation targets are reported together, so
+  // one round of fixes clears both.
+  const errors = dedupe([
+    ...(result.success ? [] : toConfigErrors(result.error, raw)),
+    ...relationReferenceErrors(raw),
+  ]);
+
+  if (!result.success || errors.length > 0) {
+    return { success: false, data: null, errors };
   }
-  return { success: false, data: null, errors: toConfigErrors(result.error, raw) };
+  return { success: true, data: result.data, errors: [] };
 }
 
 export class ConfigValidationError extends Error {

@@ -6,9 +6,9 @@ import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { getComponent } from "../ComponentRegistry";
 import { ErrorBoundary } from "../ErrorBoundary";
 
-interface Props { page: PageConfig; entity?: EntityConfig; appId: string; config: AppConfig; }
+interface Props { page: PageConfig; entity?: EntityConfig; appId: string; config: AppConfig; slug?: string[]; recordId?: string; }
 
-export function TabsLayout({ page, entity, appId, config }: Props) {
+export function TabsLayout({ page, entity, appId, config, slug, recordId }: Props) {
   const components = page.components ?? [];
   const [activeTab, setActiveTab] = useState(0);
 
@@ -43,7 +43,7 @@ export function TabsLayout({ page, entity, appId, config }: Props) {
 
       {/* Active tab content */}
       <ErrorBoundary componentType={active.type}>
-        <Comp page={page} entity={compEntity} appId={appId} config={config} {...(active.props ?? {})} />
+        <Comp page={page} entity={compEntity} appId={appId} config={config} slug={slug} recordId={recordId} {...(active.props ?? {})} />
       </ErrorBoundary>
     </div>
   );

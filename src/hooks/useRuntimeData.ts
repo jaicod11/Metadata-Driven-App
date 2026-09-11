@@ -7,6 +7,9 @@ import { PaginatedResponse } from "@/types/api.types";
 interface Options {
   page?: number;
   limit?: number;
+  /** Only records whose `filterField` equals this — how hasMany finds children. */
+  filterField?: string;
+  filterValue?: string;
 }
 
 interface UseRuntimeDataResult {
@@ -28,11 +31,19 @@ export function useRuntimeData(
   entity: string | undefined,
   options: Options = {}
 ): UseRuntimeDataResult {
-  const { page = 1, limit = 20 } = options;
+  const { page = 1, limit = 20, filterField, filterValue } = options;
+
+  // A filter with no value would silently list everything — fetch nothing instead.
+  const filtered = Boolean(filterField);
+  const filterReady = !filtered || (filterValue !== undefined && filterValue !== "");
 
   const key =
-    appId && entity
-      ? `/api/runtime/${appId}/${entity}?page=${page}&limit=${limit}`
+    appId && entity && filterReady
+      ? `/api/runtime/${appId}/${entity}?page=${page}&limit=${limit}` +
+        (filtered
+          ? `&filterField=${encodeURIComponent(filterField!)}` +
+            `&filterValue=${encodeURIComponent(filterValue!)}`
+          : "")
       : null;
 
   const { data, error, isLoading, mutate } = useSWR(key, fetcher, {
@@ -41,6 +52,31 @@ export function useRuntimeData(
   });
 
   return { data: data ?? null, isLoading, error: error ?? null, mutate };
+}
+
+/**
+ * A single record by id. Shares the `/api/runtime/:appId/:entity` key prefix, so
+ * revalidateEntity() refreshes it along with every list view.
+ */
+export function useRuntimeRecord(
+  appId: string | undefined,
+  entity: string | undefined,
+  id: string | undefined
+) {
+  const key =
+    appId && entity && id ? `/api/runtime/${appId}/${entity}?id=${id}` : null;
+
+  const { data, error, isLoading, mutate } = useSWR(key, fetcher, {
+    revalidateOnFocus: false,
+    keepPreviousData: true,
+  });
+
+  return {
+    record: (data ?? null) as Record<string, unknown> | null,
+    isLoading,
+    error: (error ?? null) as Error | null,
+    mutate,
+  };
 }
 
 /** Imperatively revalidate entity data from outside a component */

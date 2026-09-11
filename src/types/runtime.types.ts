@@ -8,6 +8,10 @@ export interface ComponentProps {
   entity?: EntityConfig;
   appId: string;
   config: AppConfig;
+  /** URL segments after /runtime/[appId]/ */
+  slug?: string[];
+  /** Trailing segment beyond the page's own path — the record a detail page shows. */
+  recordId?: string;
 }
 
 /** Current render context — what page + entity is active */

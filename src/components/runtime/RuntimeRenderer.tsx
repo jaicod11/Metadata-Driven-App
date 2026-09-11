@@ -56,6 +56,9 @@ export function RuntimeRenderer({ config, slug, appId }: RuntimeRendererProps) {
     entity,
     appId,
     config,
+    slug,
+    // Trailing segment beyond the page's own path — the record a detail page shows.
+    recordId: resolveRecordId(page, path),
   };
 
   return (
@@ -74,6 +77,18 @@ export function RuntimeRenderer({ config, slug, appId }: RuntimeRendererProps) {
 }
 
 // ── Helpers ────────────────────────────────────────────────────────────────────
+
+/**
+ * The record id a page was opened with: whatever follows the page's own path.
+ * A detail page at "/employees/view" is reached as "/employees/view/<id>".
+ */
+function resolveRecordId(page: PageConfig, path: string): string | undefined {
+  const base = page.path.replace(/\/$/, "");
+  if (!base || !path.startsWith(base + "/")) return undefined;
+
+  const rest = path.slice(base.length + 1).split("/").filter(Boolean);
+  return rest.length > 0 ? rest[rest.length - 1] : undefined;
+}
 
 /**
  * Find the best-matching PageConfig for the given path.

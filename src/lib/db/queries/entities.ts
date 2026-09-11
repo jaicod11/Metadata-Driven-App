@@ -4,6 +4,8 @@ export interface ListOptions {
   page?: number;
   limit?: number;
   orderBy?: "asc" | "desc";
+  /** Restrict to records whose JSONB `field` equals `value` — used by hasMany. */
+  filter?: { field: string; value: unknown };
 }
 
 export async function listEntityRecords(
@@ -15,14 +17,25 @@ export async function listEntityRecords(
   const limit = Math.min(options.limit ?? 20, 100);
   const skip = (page - 1) * limit;
 
+  const where = {
+    appId,
+    entity,
+    ...(options.filter
+      ? {
+          // JSONB path lookup: no column exists for a dynamic field.
+          data: { path: [options.filter.field], equals: options.filter.value as any },
+        }
+      : {}),
+  };
+
   const [rows, total] = await Promise.all([
     prisma.appData.findMany({
-      where: { appId, entity },
+      where,
       orderBy: { createdAt: options.orderBy === "asc" ? "asc" : "desc" },
       skip,
       take: limit,
     }),
-    prisma.appData.count({ where: { appId, entity } }),
+    prisma.appData.count({ where }),
   ]);
 
   const records = rows.map((r) => ({

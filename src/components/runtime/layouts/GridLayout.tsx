@@ -4,9 +4,9 @@ import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { getComponent } from "../ComponentRegistry";
 import { ErrorBoundary } from "../ErrorBoundary";
 
-interface Props { page: PageConfig; entity?: EntityConfig; appId: string; config: AppConfig; }
+interface Props { page: PageConfig; entity?: EntityConfig; appId: string; config: AppConfig; slug?: string[]; recordId?: string; }
 
-export function GridLayout({ page, entity, appId, config }: Props) {
+export function GridLayout({ page, entity, appId, config, slug, recordId }: Props) {
   const components = page.components ?? [];
   if (components.length === 0) {
     return <p className="text-sm text-gray-400">No components defined for this grid layout.</p>;
@@ -22,7 +22,7 @@ export function GridLayout({ page, entity, appId, config }: Props) {
           <ErrorBoundary key={i} componentType={comp.type}>
             <div className="bg-white rounded-xl border border-gray-200 p-5 shadow-sm">
               {comp.title && <h3 className="text-sm font-semibold text-gray-700 mb-3">{comp.title}</h3>}
-              <Comp page={page} entity={compEntity} appId={appId} config={config} {...(comp.props ?? {})} />
+              <Comp page={page} entity={compEntity} appId={appId} config={config} slug={slug} recordId={recordId} {...(comp.props ?? {})} />
             </div>
           </ErrorBoundary>
         );
