@@ -2,6 +2,11 @@
 //
 // This single file handles ALL CRUD for every entity in every app.
 // GET    /api/runtime/:appId/:entity          → list records (paginated)
+//        ?page= &limit=          page through the result (total comes back in meta)
+//        &sort= &dir=            order by a stored field, createdAt or updatedAt
+//        &q=                     text search across the role's readable text fields
+//        &filter.<field>=<value> exact match on a stored field
+//        &filterField= &filterValue=  single-filter form used by hasMany lists
 // GET    /api/runtime/:appId/:entity?id=xxx   → get single record
 // POST   /api/runtime/:appId/:entity          → create record
 // PUT    /api/runtime/:appId/:entity?id=xxx   → update record
@@ -13,6 +18,9 @@ import { authOptions } from "@/lib/auth/auth-options";
 import { parseConfig } from "@/lib/runtime/schema-parser";
 import { validateEntityRecord } from "@/lib/runtime/validator.server";
 import {
+  EntityFilter,
+  EntitySort,
+  MAX_PAGE_SIZE,
   listEntityRecords,
   getEntityRecord,
   createEntityRecord,
@@ -34,9 +42,12 @@ import {
   can,
   readableRecord,
   resolveRole,
+  visibleFields,
   writableData,
 } from "@/lib/runtime/permissions";
-import { AppConfig, EntityConfig } from "@/types/config.types";
+import { isComputed } from "@/lib/runtime/computed";
+import { isHasMany } from "@/lib/runtime/relations";
+import { AppConfig, EntityConfig, FieldConfig, FieldType } from "@/types/config.types";
 
 type Params = { params: { appId: string; entity: string } };
 
@@ -92,6 +103,60 @@ function denyUnless(
   );
 }
 
+// ── Query params: filtering, sorting, searching ───────────────────────────────
+
+/** Types whose values read as text, and so are worth searching. */
+const SEARCHABLE_TYPES: FieldType[] = [
+  "string",
+  "textarea",
+  "email",
+  "url",
+  "select",
+];
+
+/** Real columns every reader gets back, so they are always sortable. */
+const SORTABLE_COLUMNS = ["createdAt", "updatedAt"] as const;
+
+/**
+ * The fields a role may filter, sort or search on: exactly the ones it may
+ * read, minus the ones that don't exist in the database.
+ *
+ * Computed fields are derived in readableRecord() and have no column or JSONB
+ * key to query. hasMany is stored on the child. And anything visibleFields()
+ * drops — a field the role can't see, or one whose relation target it can't
+ * read — must not be queryable either, or a filter would become an oracle for
+ * values the role is not allowed to read.
+ */
+function queryableFields(
+  config: AppConfig,
+  entity: EntityConfig,
+  role: ActiveRole
+): Map<string, FieldConfig> {
+  const usable = visibleFields(config, entity, role).filter(
+    (field) => !isComputed(field) && !isHasMany(field)
+  );
+  return new Map(usable.map((field) => [field.name, field]));
+}
+
+/** Match the filter value's JSON type to the field's, so containment matches. */
+function coerceFilterValue(field: FieldConfig, raw: string): unknown {
+  if (field.type === "number") {
+    const value = Number(raw);
+    return isNaN(value) ? raw : value;
+  }
+  if (field.type === "boolean") {
+    if (raw === "true") return true;
+    if (raw === "false") return false;
+  }
+  return raw;
+}
+
+const rejectField = (name: string, verb: string) =>
+  apiError(
+    `Cannot ${verb} "${name}" — no such stored field, or your role cannot read it`,
+    400
+  );
+
 // ── GET ───────────────────────────────────────────────────────────────────────
 
 export async function GET(req: NextRequest, { params }: Params) {
@@ -123,23 +188,81 @@ export async function GET(req: NextRequest, { params }: Params) {
       return apiOk(visible(record));
     }
 
-    const page = parseInt(url.searchParams.get("page") ?? "1");
-    const limit = parseInt(url.searchParams.get("limit") ?? "20");
+    const page = Math.max(1, parseInt(url.searchParams.get("page") ?? "1") || 1);
+    const limit = Math.min(
+      Math.max(1, parseInt(url.searchParams.get("limit") ?? "20") || 20),
+      MAX_PAGE_SIZE
+    );
+
+    // Every field named by a query param is checked against this map, so a role
+    // can only query what it can already read.
+    const queryable = queryableFields(ctx.config, ctx.entity, ctx.role);
+
+    // ── filters ──────────────────────────────────────────────────────────────
+    const filters: EntityFilter[] = [];
+
+    for (const [key, raw] of url.searchParams.entries()) {
+      if (!key.startsWith("filter.")) continue;
+      const name = key.slice("filter.".length);
+      const field = queryable.get(name);
+      if (!field) return rejectField(name, "filter on");
+      filters.push({ field: name, value: coerceFilterValue(field, raw) });
+    }
 
     // ?filterField=&filterValue= — how a hasMany list finds its children.
     const filterField = url.searchParams.get("filterField");
     const filterValue = url.searchParams.get("filterValue");
-    const filter =
-      filterField && filterValue !== null
-        ? { field: filterField, value: filterValue }
-        : undefined;
+    if (filterField && filterValue !== null) {
+      const field = queryable.get(filterField);
+      if (!field) return rejectField(filterField, "filter on");
+      filters.push({
+        field: filterField,
+        value: coerceFilterValue(field, filterValue),
+      });
+    }
+
+    // ── sort ─────────────────────────────────────────────────────────────────
+    const sortParam = url.searchParams.get("sort");
+    const direction = url.searchParams.get("dir") === "asc" ? "asc" : "desc";
+    let sort: EntitySort | undefined;
+
+    if (sortParam) {
+      const column = SORTABLE_COLUMNS.find((c) => c === sortParam);
+      if (column) {
+        sort = { column, direction };
+      } else {
+        const field = queryable.get(sortParam);
+        if (!field) return rejectField(sortParam, "sort by");
+        sort = {
+          field: sortParam,
+          direction,
+          numeric: field.type === "number",
+        };
+      }
+    }
+
+    // ── search ───────────────────────────────────────────────────────────────
+    const term = url.searchParams.get("q")?.trim();
+    const search = term
+      ? {
+          term,
+          // Only the readable text fields — never a hidden one, so a search
+          // cannot confirm a value the role may not see.
+          fields: Array.from(queryable.values())
+            .filter((field) => SEARCHABLE_TYPES.includes(field.type))
+            .map((field) => field.name),
+        }
+      : undefined;
 
     const result = await listEntityRecords(appId, entityName, {
       page,
       limit,
-      filter,
+      filters,
+      sort,
+      search,
     });
 
+    // meta carries the total count so the client can paginate.
     return apiOk({ ...result, records: result.records.map(visible) });
   } catch (err) {
     console.error("[RUNTIME GET]", err);

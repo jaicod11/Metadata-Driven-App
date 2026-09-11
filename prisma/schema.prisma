@@ -104,6 +104,9 @@ model AppData {
 
   @@index([appId, entity])
   @@index([appId, entity, createdAt])
+  // Dynamic fields live inside `data`, so filtering and searching them are
+  // JSONB containment queries — this is the only index that can serve them.
+  @@index([data(ops: JsonbOps)], type: Gin)
   @@map("app_data")
 }
 

@@ -1,42 +1,88 @@
+import { Prisma } from "@prisma/client";
 import { prisma } from "@/lib/db/prisma";
+
+/** Restrict to records whose JSONB `field` equals `value`. */
+export interface EntityFilter {
+  field: string;
+  value: unknown;
+}
+
+export interface EntitySort {
+  /** JSONB key to sort by; ignored when `column` is set. */
+  field?: string;
+  direction: "asc" | "desc";
+  /** Sort numerically rather than as text — set for number fields. */
+  numeric?: boolean;
+  /** Sort by a real column instead of a JSONB key. */
+  column?: "createdAt" | "updatedAt";
+}
+
+export interface EntitySearch {
+  term: string;
+  /** JSONB keys to match against. An empty list matches nothing. */
+  fields: string[];
+}
 
 export interface ListOptions {
   page?: number;
   limit?: number;
   orderBy?: "asc" | "desc";
-  /** Restrict to records whose JSONB `field` equals `value` — used by hasMany. */
-  filter?: { field: string; value: unknown };
+  /** Single filter, kept for callers that only need one (hasMany children). */
+  filter?: EntityFilter;
+  filters?: EntityFilter[];
+  sort?: EntitySort;
+  search?: EntitySearch;
 }
 
+export const MAX_PAGE_SIZE = 100;
+
+/**
+ * Callers are responsible for only passing field names the requester is allowed
+ * to read — the API route resolves those from the config and the active role.
+ * Nothing here can check permissions.
+ *
+ * This is raw SQL rather than the query builder for two reasons: Prisma cannot
+ * ORDER BY a JSON path at all, and its JSON `path`/`equals` filter compiles to
+ * `data#>'{k}' = ...`, which no index can serve. Containment (`@>`) is what the
+ * GIN index on app_data.data answers. Every value is a bound parameter,
+ * including JSONB keys (`data->>$n::text` is legal — the cast disambiguates the
+ * text-key operator from the array-index one), so no caller input is ever
+ * interpolated into the statement.
+ */
 export async function listEntityRecords(
   appId: string,
   entity: string,
   options: ListOptions = {}
 ) {
   const page = Math.max(1, options.page ?? 1);
-  const limit = Math.min(options.limit ?? 20, 100);
+  const limit = Math.min(Math.max(1, options.limit ?? 20), MAX_PAGE_SIZE);
   const skip = (page - 1) * limit;
 
-  const where = {
-    appId,
-    entity,
-    ...(options.filter
-      ? {
-          // JSONB path lookup: no column exists for a dynamic field.
-          data: { path: [options.filter.field], equals: options.filter.value as any },
-        }
-      : {}),
+  const where = buildWhere(appId, entity, options);
+  const orderBy = buildOrderBy(options);
+
+  type Row = {
+    id: string;
+    data: unknown;
+    createdAt: Date;
+    updatedAt: Date;
   };
 
-  const [rows, total] = await Promise.all([
-    prisma.appData.findMany({
-      where,
-      orderBy: { createdAt: options.orderBy === "asc" ? "asc" : "desc" },
-      skip,
-      take: limit,
-    }),
-    prisma.appData.count({ where }),
+  const [rows, counted] = await Promise.all([
+    prisma.$queryRaw<Row[]>`
+      SELECT "id", "data", "createdAt", "updatedAt"
+      FROM "app_data"
+      WHERE ${where}
+      ${orderBy}
+      LIMIT ${limit} OFFSET ${skip}
+    `,
+    // ::int because COUNT() is a bigint, which does not survive JSON encoding.
+    prisma.$queryRaw<{ total: number }[]>`
+      SELECT COUNT(*)::int AS total FROM "app_data" WHERE ${where}
+    `,
   ]);
+
+  const total = Number(counted[0]?.total ?? 0);
 
   const records = rows.map((r) => ({
     id: r.id,
@@ -47,8 +93,90 @@ export async function listEntityRecords(
 
   return {
     records,
-    meta: { page, limit, total, totalPages: Math.ceil(total / limit) },
+    meta: { page, limit, total, totalPages: Math.max(1, Math.ceil(total / limit)) },
   };
+}
+
+// ── Query construction ────────────────────────────────────────────────────────
+
+function buildWhere(
+  appId: string,
+  entity: string,
+  options: ListOptions
+): Prisma.Sql {
+  const conditions: Prisma.Sql[] = [
+    Prisma.sql`"appId" = ${appId}`,
+    Prisma.sql`"entity" = ${entity}`,
+  ];
+
+  const filters = [
+    ...(options.filter ? [options.filter] : []),
+    ...(options.filters ?? []),
+  ];
+
+  for (const filter of filters) {
+    if (filter.value === undefined || filter.value === null) continue;
+    // Containment, so the GIN index can serve it. Note this compares JSON
+    // types: a numeric field wants a number here, not "5".
+    const probe = JSON.stringify({ [filter.field]: filter.value });
+    conditions.push(Prisma.sql`"data" @> ${probe}::jsonb`);
+  }
+
+  const search = options.search;
+  if (search && search.term.trim() !== "") {
+    if (search.fields.length === 0) {
+      // Nothing this caller may search — that is no matches, not no filter.
+      conditions.push(Prisma.sql`FALSE`);
+    } else {
+      const term = `%${escapeLike(search.term.trim())}%`;
+      const matches = search.fields.map(
+        (field) => Prisma.sql`"data"->>${field}::text ILIKE ${term}`
+      );
+      conditions.push(Prisma.sql`(${Prisma.join(matches, " OR ")})`);
+    }
+  }
+
+  return Prisma.join(conditions, " AND ");
+}
+
+function buildOrderBy(options: ListOptions): Prisma.Sql {
+  const sort = options.sort;
+  // Direction is whitelisted here; it is the only part of the statement that is
+  // not a bound parameter.
+  const direction = Prisma.raw(sort?.direction === "asc" ? "ASC" : "DESC");
+
+  if (sort?.column) {
+    const column = Prisma.raw(
+      sort.column === "updatedAt" ? `"updatedAt"` : `"createdAt"`
+    );
+    return Prisma.sql`ORDER BY ${column} ${direction}, "id" ASC`;
+  }
+
+  if (sort?.field) {
+    const key = sort.field;
+    // A stable tiebreaker keeps paging consistent when values repeat.
+    if (sort.numeric) {
+      // Rows whose value isn't actually a number sort last rather than erroring
+      // the whole query on a bad cast.
+      return Prisma.sql`
+        ORDER BY CASE WHEN jsonb_typeof("data"->${key}::text) = 'number'
+                      THEN ("data"->>${key}::text)::numeric END ${direction} NULLS LAST,
+                 "createdAt" DESC, "id" ASC
+      `;
+    }
+    return Prisma.sql`
+      ORDER BY lower("data"->>${key}::text) ${direction} NULLS LAST,
+               "createdAt" DESC, "id" ASC
+    `;
+  }
+
+  const fallback = Prisma.raw(options.orderBy === "asc" ? "ASC" : "DESC");
+  return Prisma.sql`ORDER BY "createdAt" ${fallback}, "id" ASC`;
+}
+
+/** So a user's % or _ searches literally instead of wildcarding. */
+function escapeLike(term: string): string {
+  return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
 export async function getEntityRecord(

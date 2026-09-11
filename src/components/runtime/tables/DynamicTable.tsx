@@ -1,7 +1,7 @@
 // src/components/runtime/tables/DynamicTable.tsx
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   AppConfig,
   EntityConfig,
@@ -27,6 +27,8 @@ import {
 } from "@/lib/runtime/permissions";
 import { computeFieldValue, isComputed } from "@/lib/runtime/computed";
 
+const PAGE_SIZE = 20;
+
 interface Props {
   page: PageConfig;
   entity?: EntityConfig;
@@ -43,12 +45,38 @@ export function DynamicTable({
   role = FULL_ACCESS_ROLE,
 }: Props) {
   const [currentPage, setCurrentPage] = useState(1);
+  const [sort, setSort] = useState<{ field: string; dir: "asc" | "desc" } | null>(
+    null
+  );
+  const [searchInput, setSearchInput] = useState("");
+  const [search, setSearch] = useState("");
   const mayRead = can(entity, role, "read");
+
+  // Typing shouldn't fire a request per keystroke; the committed term is what
+  // the SWR key is built from.
+  useEffect(() => {
+    const timer = setTimeout(() => setSearch(searchInput.trim()), 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
+  // A new query means a new first page.
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [search, sort?.field, sort?.dir]);
+
+  // Filtering, sorting, searching and paging all happen server-side: this is one
+  // request for the whole view, re-keyed when the query changes.
   const { data, isLoading, error, mutate } = useRuntimeData(
     // Don't even ask for records this role cannot read — the API would 403.
     mayRead ? appId : undefined,
     entity?.name,
-    { page: currentPage, limit: 20 }
+    {
+      page: currentPage,
+      limit: PAGE_SIZE,
+      sort: sort?.field,
+      dir: sort?.dir,
+      search: search || undefined,
+    }
   );
 
   // ── Guard ──────────────────────────────────────────────────────────────────
@@ -107,6 +135,15 @@ export function DynamicTable({
   const detailPage = findDetailPage(config, entity.name);
   const mayDelete = can(entity, role, "delete");
 
+  /** First click sorts ascending, second flips, third clears. */
+  const toggleSort = (field: string) => {
+    setSort((current) => {
+      if (current?.field !== field) return { field, dir: "asc" };
+      if (current.dir === "asc") return { field, dir: "desc" };
+      return null;
+    });
+  };
+
   const handleDelete = async (id: string) => {
     await fetch(`/api/runtime/${appId}/${entity.name}?id=${id}`, {
       method: "DELETE",
@@ -117,19 +154,79 @@ export function DynamicTable({
   return (
     <ErrorBoundary componentType="table">
       <div className="space-y-4">
+        {/* Toolbar */}
+        <div className="flex items-center justify-between gap-3 flex-wrap">
+          <div className="relative">
+            <input
+              type="search"
+              value={searchInput}
+              onChange={(e) => setSearchInput(e.target.value)}
+              placeholder={`Search ${(entity.label ?? entity.name).toLowerCase()}…`}
+              className="w-64 max-w-full pl-8 pr-3 py-2 border border-gray-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent transition-colors"
+            />
+            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-gray-400 text-sm">
+              ⌕
+            </span>
+          </div>
+
+          <div className="flex items-center gap-3 text-xs text-gray-500">
+            {isLoading && <span>Loading…</span>}
+            {meta && (
+              <span>
+                {meta.total} {meta.total === 1 ? "record" : "records"}
+              </span>
+            )}
+            {(sort || search) && (
+              <button
+                type="button"
+                onClick={() => {
+                  setSort(null);
+                  setSearchInput("");
+                }}
+                className="underline hover:text-gray-700"
+              >
+                Reset
+              </button>
+            )}
+          </div>
+        </div>
+
         {/* Table */}
         <div className="overflow-x-auto rounded-xl border border-gray-200 shadow-sm">
           <table className="min-w-full divide-y divide-gray-200 text-sm">
             <thead className="bg-gray-50">
               <tr>
-                {columns.map((f) => (
-                  <th
-                    key={f.name}
-                    className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap"
-                  >
-                    {f.label ?? f.name}
-                  </th>
-                ))}
+                {columns.map((f) => {
+                  // Computed values are derived at read time and relations hold
+                  // an opaque id, so neither can be ordered by in the database.
+                  const sortable = !isComputed(f) && !isBelongsTo(f);
+                  const active = sort?.field === f.name;
+
+                  return (
+                    <th
+                      key={f.name}
+                      className="px-4 py-3 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider whitespace-nowrap"
+                    >
+                      {sortable ? (
+                        <button
+                          type="button"
+                          onClick={() => toggleSort(f.name)}
+                          className={`flex items-center gap-1 uppercase tracking-wider transition-colors ${
+                            active ? "text-blue-600" : "hover:text-gray-700"
+                          }`}
+                          aria-label={`Sort by ${f.label ?? f.name}`}
+                        >
+                          {f.label ?? f.name}
+                          <span className={active ? "" : "text-gray-300"}>
+                            {active ? (sort?.dir === "asc" ? "↑" : "↓") : "↕"}
+                          </span>
+                        </button>
+                      ) : (
+                        (f.label ?? f.name)
+                      )}
+                    </th>
+                  );
+                })}
                 <th className="px-4 py-3 text-right text-xs font-semibold text-gray-500 uppercase tracking-wider">
                   Actions
                 </th>
@@ -142,10 +239,23 @@ export function DynamicTable({
                     colSpan={columns.length + 1}
                     className="px-4 py-12 text-center text-gray-400"
                   >
-                    <p className="text-sm">No records yet.</p>
-                    <p className="text-xs mt-1">
-                      Use the form page for this entity to add some.
-                    </p>
+                    {search ? (
+                      <>
+                        <p className="text-sm">
+                          No records match &quot;{search}&quot;.
+                        </p>
+                        <p className="text-xs mt-1">
+                          Try a different search term.
+                        </p>
+                      </>
+                    ) : (
+                      <>
+                        <p className="text-sm">No records yet.</p>
+                        <p className="text-xs mt-1">
+                          Use the form page for this entity to add some.
+                        </p>
+                      </>
+                    )}
                   </td>
                 </tr>
               ) : (

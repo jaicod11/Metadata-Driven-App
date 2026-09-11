@@ -10,6 +10,13 @@ interface Options {
   /** Only records whose `filterField` equals this — how hasMany finds children. */
   filterField?: string;
   filterValue?: string;
+  /** Exact-match filters, keyed by field name. */
+  filters?: Record<string, string | undefined>;
+  /** Field to order by — a stored field name, or createdAt / updatedAt. */
+  sort?: string;
+  dir?: "asc" | "desc";
+  /** Text search across the fields the role may read. */
+  search?: string;
 }
 
 interface UseRuntimeDataResult {
@@ -31,19 +38,43 @@ export function useRuntimeData(
   entity: string | undefined,
   options: Options = {}
 ): UseRuntimeDataResult {
-  const { page = 1, limit = 20, filterField, filterValue } = options;
+  const {
+    page = 1,
+    limit = 20,
+    filterField,
+    filterValue,
+    filters,
+    sort,
+    dir = "desc",
+    search,
+  } = options;
 
   // A filter with no value would silently list everything — fetch nothing instead.
   const filtered = Boolean(filterField);
   const filterReady = !filtered || (filterValue !== undefined && filterValue !== "");
 
+  // One key per entity + query: params are appended in a fixed order, so every
+  // component showing the same view shares a single request and a single cache
+  // entry. revalidateEntity() still matches them all on the path prefix.
+  const params = new URLSearchParams();
+  params.set("page", String(page));
+  params.set("limit", String(limit));
+  if (sort) {
+    params.set("sort", sort);
+    params.set("dir", dir);
+  }
+  if (search) params.set("q", search);
+  for (const [field, value] of Object.entries(filters ?? {})) {
+    if (value !== undefined && value !== "") params.set(`filter.${field}`, value);
+  }
+  if (filtered && filterReady) {
+    params.set("filterField", filterField!);
+    params.set("filterValue", filterValue!);
+  }
+
   const key =
     appId && entity && filterReady
-      ? `/api/runtime/${appId}/${entity}?page=${page}&limit=${limit}` +
-        (filtered
-          ? `&filterField=${encodeURIComponent(filterField!)}` +
-            `&filterValue=${encodeURIComponent(filterValue!)}`
-          : "")
+      ? `/api/runtime/${appId}/${entity}?${params.toString()}`
       : null;
 
   const { data, error, isLoading, mutate } = useSWR(key, fetcher, {
