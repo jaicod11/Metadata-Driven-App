@@ -17,6 +17,7 @@ let _DynamicForm: ComponentType<any> | null = null;
 let _DynamicTable: ComponentType<any> | null = null;
 let _DynamicDashboard: ComponentType<any> | null = null;
 let _DetailView: ComponentType<any> | null = null;
+let _AuditLogView: ComponentType<any> | null = null;
 let _RelatedList: ComponentType<any> | null = null;
 let _GridLayout: ComponentType<any> | null = null;
 let _TabsLayout: ComponentType<any> | null = null;
@@ -35,7 +36,10 @@ export function hasComponent(type: string): boolean {
   const key = type.toLowerCase();
   return (
     key in customRegistry ||
-    ["form", "table", "dashboard", "detail", "relatedlist", "grid", "tabs", "stack"].includes(key)
+    [
+      "form", "table", "dashboard", "detail", "auditlog",
+      "relatedlist", "grid", "tabs", "stack",
+    ].includes(key)
   );
 }
 
@@ -79,6 +83,13 @@ export function getComponent(type: string): ComponentType<any> {
         _DetailView = require("./detail/DetailView").DetailView;
       }
       return _DetailView!;
+
+    case "auditlog":
+      if (!_AuditLogView) {
+        // eslint-disable-next-line @typescript-eslint/no-var-requires
+        _AuditLogView = require("./audit/AuditLogView").AuditLogView;
+      }
+      return _AuditLogView!;
 
     case "relatedlist":
       if (!_RelatedList) {

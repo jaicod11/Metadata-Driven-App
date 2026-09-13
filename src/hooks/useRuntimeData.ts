@@ -2,7 +2,7 @@
 "use client";
 
 import useSWR, { mutate as globalMutate } from "swr";
-import { PaginatedResponse } from "@/types/api.types";
+import { PaginatedResponse, PaginationMeta } from "@/types/api.types";
 
 interface Options {
   page?: number;
@@ -104,6 +104,51 @@ export function useRuntimeRecord(
 
   return {
     record: (data ?? null) as Record<string, unknown> | null,
+    isLoading,
+    error: (error ?? null) as Error | null,
+    mutate,
+  };
+}
+
+export interface AuditEntry {
+  id: string;
+  entity: string;
+  recordId: string;
+  action: "create" | "update" | "delete";
+  userId: string;
+  userEmail: string | null;
+  createdAt: string;
+  /** Already redacted to what this reader may see — see lib/runtime/audit.ts. */
+  diff: { fields: Record<string, unknown> };
+}
+
+/**
+ * Recent audit entries for one entity. Shares the
+ * `/api/runtime/:appId/:entity` key prefix, so revalidateEntity() refreshes the
+ * log along with the records after a write.
+ */
+export function useAuditLog(
+  appId: string | undefined,
+  entity: string | undefined,
+  options: { page?: number; limit?: number } = {}
+) {
+  const { page = 1, limit = 20 } = options;
+
+  const key =
+    appId && entity
+      ? `/api/runtime/${appId}/${entity}/audit?page=${page}&limit=${limit}`
+      : null;
+
+  const { data, error, isLoading, mutate } = useSWR(key, fetcher, {
+    revalidateOnFocus: false,
+    keepPreviousData: true,
+  });
+
+  return {
+    data: (data ?? null) as {
+      entries: AuditEntry[];
+      meta: PaginationMeta;
+    } | null,
     isLoading,
     error: (error ?? null) as Error | null,
     mutate,

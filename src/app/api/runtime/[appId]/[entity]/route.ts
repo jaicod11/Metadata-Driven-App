@@ -28,6 +28,8 @@ import {
   deleteEntityRecord,
 } from "@/lib/db/queries/entities";
 import { getApp } from "@/lib/db/queries/apps";
+import { recordAuditEntry } from "@/lib/db/queries/audit";
+import { AuditAction, buildAuditDiff } from "@/lib/runtime/audit";
 import {
   apiOk,
   apiError,
@@ -41,12 +43,10 @@ import {
   PermissionAction,
   can,
   readableRecord,
+  readableStoredFields,
   resolveRole,
-  visibleFields,
   writableData,
 } from "@/lib/runtime/permissions";
-import { isComputed } from "@/lib/runtime/computed";
-import { isHasMany } from "@/lib/runtime/relations";
 import { AppConfig, EntityConfig, FieldConfig, FieldType } from "@/types/config.types";
 
 type Params = { params: { appId: string; entity: string } };
@@ -87,6 +87,31 @@ async function resolveContext(
   });
 
   return { config: parsed.config as AppConfig, entity, role };
+}
+
+/**
+ * Log a mutation that has already committed. The diff is built against the
+ * acting role's readable stored fields, so the trail can never name a field
+ * this caller wasn't allowed to read — see src/lib/runtime/audit.ts.
+ */
+async function auditMutation(
+  ctx: { config: AppConfig; entity: EntityConfig; role: ActiveRole },
+  user: { id: string; email?: string | null },
+  appId: string,
+  action: AuditAction,
+  recordId: string,
+  before: Record<string, unknown> | null,
+  after: Record<string, unknown> | null
+) {
+  await recordAuditEntry({
+    appId,
+    entity: ctx.entity.name,
+    recordId,
+    action,
+    userId: user.id,
+    userEmail: user.email ?? null,
+    diff: buildAuditDiff(ctx.config, ctx.entity, ctx.role, action, before, after),
+  });
 }
 
 /** 403 unless the role may perform `action` on this entity. */
@@ -132,9 +157,7 @@ function queryableFields(
   entity: EntityConfig,
   role: ActiveRole
 ): Map<string, FieldConfig> {
-  const usable = visibleFields(config, entity, role).filter(
-    (field) => !isComputed(field) && !isHasMany(field)
-  );
+  const usable = readableStoredFields(config, entity, role);
   return new Map(usable.map((field) => [field.name, field]));
 }
 
@@ -312,6 +335,17 @@ export async function POST(req: NextRequest, { params }: Params) {
     );
 
     const record = await createEntityRecord(appId, entityName, data);
+
+    await auditMutation(
+      ctx,
+      { id: session.user.id, email: session.user.email },
+      appId,
+      "create",
+      String(record.id),
+      null,
+      record
+    );
+
     return apiOk(readableRecord(ctx.config, ctx.entity, ctx.role, record), 201);
   } catch (err) {
     console.error("[RUNTIME POST]", err);
@@ -356,6 +390,9 @@ export async function PUT(req: NextRequest, { params }: Params) {
       return apiError("Validation failed", 400, validation.fieldErrors);
     }
 
+    // Read the record first so the audit entry can diff old against new.
+    const before = await getEntityRecord(appId, entityName, id);
+
     const updated = await updateEntityRecord(
       appId,
       entityName,
@@ -363,6 +400,16 @@ export async function PUT(req: NextRequest, { params }: Params) {
       writableData(ctx.config, ctx.entity, ctx.role, validation.data!, "update")
     );
     if (!updated) return apiNotFound("Record");
+
+    await auditMutation(
+      ctx,
+      { id: session.user.id, email: session.user.email },
+      appId,
+      "update",
+      id,
+      before,
+      updated
+    );
 
     return apiOk(readableRecord(ctx.config, ctx.entity, ctx.role, updated));
   } catch (err) {
@@ -391,8 +438,21 @@ export async function DELETE(req: NextRequest, { params }: Params) {
     const denied = denyUnless(ctx.entity, ctx.role, "delete");
     if (denied) return denied;
 
+    // The record has to be read before it is gone, to log what was removed.
+    const before = await getEntityRecord(appId, entityName, id);
+
     const deleted = await deleteEntityRecord(appId, entityName, id);
     if (!deleted) return apiNotFound("Record");
+
+    await auditMutation(
+      ctx,
+      { id: session.user.id, email: session.user.email },
+      appId,
+      "delete",
+      id,
+      before,
+      null
+    );
 
     return apiOk({ deleted: true });
   } catch (err) {

@@ -44,6 +44,8 @@ export interface EntityPermissionRule {
   create?: boolean;
   update?: boolean;
   delete?: boolean;
+  /** May browse this entity's audit trail — see the "auditLog" page layout. */
+  auditLog?: boolean;
 }
 
 /** Per-field override for a role. Both default to true. */
@@ -126,6 +128,7 @@ export type LayoutType =
   | "table"
   | "dashboard"
   | "detail"
+  | "auditLog"
   | "grid"
   | "tabs"
   | "stack";

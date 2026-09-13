@@ -65,11 +65,11 @@ export const RELATION_TYPES = [
 
 /** The verbs an entity permission rule can grant. */
 export const PERMISSION_ACTIONS = [
-  "read", "create", "update", "delete",
+  "read", "create", "update", "delete", "auditLog",
 ] as const satisfies readonly (keyof EntityPermissionRule)[];
 
 export const LAYOUT_TYPES = [
-  "form", "table", "dashboard", "detail", "grid", "tabs", "stack",
+  "form", "table", "dashboard", "detail", "auditLog", "grid", "tabs", "stack",
 ] as const satisfies readonly LayoutType[];
 
 export const TRIGGER_TYPES = [
@@ -124,6 +124,7 @@ export const entityPermissionRuleSchema = z.object({
   create: z.boolean().optional(),
   update: z.boolean().optional(),
   delete: z.boolean().optional(),
+  auditLog: z.boolean().optional(),
 }) satisfies z.ZodType<EntityPermissionRule>;
 
 export const fieldPermissionRuleSchema = z.object({
@@ -325,6 +326,7 @@ const entityPermissionInputSchema = z
       create: booleanRule("create"),
       update: booleanRule("update"),
       delete: booleanRule("delete"),
+      auditLog: booleanRule("auditLog"),
     },
     {
       invalid_type_error: `Each entity permission must be an object like { "read": true }`,

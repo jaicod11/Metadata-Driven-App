@@ -33,13 +33,20 @@ import {
 import { isHasMany, isRelation, relationTarget } from "./relations";
 import { computedDependencies, isComputed, withComputedValues } from "./computed";
 
-export type PermissionAction = "read" | "create" | "update" | "delete";
+export type PermissionAction =
+  | "read"
+  | "create"
+  | "update"
+  | "delete"
+  | "auditLog";
 
 export interface EntityPermissions {
   read: boolean;
   create: boolean;
   update: boolean;
   delete: boolean;
+  /** Browse this entity's audit trail. Denied unless granted, like every verb. */
+  auditLog: boolean;
 }
 
 export interface FieldAccess {
@@ -66,6 +73,7 @@ export const FULL_ACCESS: EntityPermissions = {
   create: true,
   update: true,
   delete: true,
+  auditLog: true,
 };
 
 export const NO_ACCESS: EntityPermissions = {
@@ -73,6 +81,7 @@ export const NO_ACCESS: EntityPermissions = {
   create: false,
   update: false,
   delete: false,
+  auditLog: false,
 };
 
 /** Access when a config declares no roles at all. */
@@ -161,6 +170,7 @@ export function entityPermissions(
     create: rule.create === true,
     update: rule.update === true,
     delete: rule.delete === true,
+    auditLog: rule.auditLog === true,
   };
 }
 
@@ -258,6 +268,22 @@ export function canResolveRelation(
   return Boolean(target) && can(target, role, "read");
 }
 
+/**
+ * The fields a role may read that actually exist in storage: no computed
+ * (derived at read time, no column or JSONB key) and no hasMany (stored on the
+ * child). This is what the list route may filter, sort and search on, and the
+ * only thing an audit diff may name.
+ */
+export function readableStoredFields(
+  config: AppConfig,
+  entity: EntityConfig,
+  role: ActiveRole
+): FieldConfig[] {
+  return visibleFields(config, entity, role).filter(
+    (field) => !isComputed(field) && !isHasMany(field)
+  );
+}
+
 /** Fields a role may write, given whether this is a create or an update. */
 export function writableFields(
   config: AppConfig,
@@ -349,7 +375,8 @@ export function canSeePage(
   // An undefined entity reference is already a config warning; don't hide it.
   if (!entity) return true;
 
-  return can(entity, role, "read");
+  // An audit page shows history, not records, so it answers to its own verb.
+  return can(entity, role, page.layout === "auditLog" ? "auditLog" : "read");
 }
 
 export function visiblePages(config: AppConfig, role: ActiveRole): PageConfig[] {
