@@ -179,6 +179,101 @@ function escapeLike(term: string): string {
   return term.replace(/[\\%_]/g, (ch) => `\\${ch}`);
 }
 
+// ─── Summaries ────────────────────────────────────────────────────────────────
+//
+// Dashboard widgets read through the same WHERE builder as the list route, so a
+// widget filter behaves exactly like ?filter.<field>= and is served by the same
+// GIN index. Callers are responsible for only naming fields the requester may
+// read — src/lib/runtime/widgets.ts decides that.
+
+export interface SummaryOptions {
+  filters?: EntityFilter[];
+}
+
+/** How many records match. Same WHERE as listEntityRecords, without the page. */
+export async function countEntityRecords(
+  appId: string,
+  entity: string,
+  options: SummaryOptions = {}
+): Promise<number> {
+  const where = buildWhere(appId, entity, options);
+
+  const rows = await prisma.$queryRaw<{ total: number }[]>`
+    SELECT COUNT(*)::int AS total FROM "app_data" WHERE ${where}
+  `;
+  return Number(rows[0]?.total ?? 0);
+}
+
+export type AggregateOperation = "sum" | "avg" | "min" | "max";
+
+const AGGREGATE_SQL: Record<AggregateOperation, string> = {
+  sum: "SUM",
+  avg: "AVG",
+  min: "MIN",
+  max: "MAX",
+};
+
+/**
+ * Reduce one numeric JSONB field. Rows whose value is not actually a number are
+ * skipped rather than failing the whole query on a bad cast — the same guard
+ * the numeric sort uses. Returns null when nothing matched.
+ */
+export async function aggregateEntityRecords(
+  appId: string,
+  entity: string,
+  options: SummaryOptions & { field: string; op: AggregateOperation }
+): Promise<number | null> {
+  const where = buildWhere(appId, entity, options);
+  // Whitelisted, and the only part of the statement that is not a parameter.
+  const fn = Prisma.raw(AGGREGATE_SQL[options.op] ?? "SUM");
+  const field = options.field;
+
+  const rows = await prisma.$queryRaw<{ value: number | null }[]>`
+    SELECT ${fn}(
+             CASE WHEN jsonb_typeof("data"->${field}::text) = 'number'
+                  THEN ("data"->>${field}::text)::numeric END
+           )::float8 AS value
+    FROM "app_data"
+    WHERE ${where}
+  `;
+
+  const value = rows[0]?.value;
+  return value === null || value === undefined ? null : Number(value);
+}
+
+export interface GroupCount {
+  /** The field's value for this group; null when the record has no value. */
+  label: string | null;
+  value: number;
+}
+
+/** Count records per distinct value of one field — what a chart widget plots. */
+export async function groupEntityRecords(
+  appId: string,
+  entity: string,
+  options: SummaryOptions & { field: string; limit?: number }
+): Promise<GroupCount[]> {
+  const where = buildWhere(appId, entity, options);
+  const limit = Math.min(Math.max(1, options.limit ?? 12), 50);
+  const field = options.field;
+
+  // GROUP BY / ORDER BY are positional so the grouped expression stays a
+  // bound parameter rather than being repeated.
+  const rows = await prisma.$queryRaw<{ label: string | null; value: number }[]>`
+    SELECT "data"->>${field}::text AS label, COUNT(*)::int AS value
+    FROM "app_data"
+    WHERE ${where}
+    GROUP BY 1
+    ORDER BY 2 DESC, 1 ASC
+    LIMIT ${limit}
+  `;
+
+  return rows.map((row) => ({
+    label: row.label === null || row.label === undefined ? null : String(row.label),
+    value: Number(row.value),
+  }));
+}
+
 export async function getEntityRecord(
   appId: string,
   entity: string,

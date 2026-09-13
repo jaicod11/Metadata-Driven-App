@@ -150,12 +150,42 @@ export interface ComponentConfig {
   props?: Record<string, unknown>;
 }
 
+// ─── Dashboard widgets ────────────────────────────────────────────────────────
+
+export type WidgetType = "count" | "aggregate" | "chart";
+export type AggregateOp = "sum" | "avg" | "min" | "max";
+export type ChartKind = "bar" | "line";
+
+/**
+ * A tile on a "dashboard" page. Every widget reads one entity, and is only
+ * rendered for a role that may read that entity and every field it names —
+ * see src/lib/runtime/widgets.ts.
+ */
+export interface WidgetConfig {
+  type: WidgetType;
+  title?: string;
+  /** Entity the widget summarises. Must exist in the config. */
+  entity: string;
+  /** aggregate: the number field to reduce. chart: the field to group by. */
+  field?: string;
+  /** aggregate only; defaults to "sum". */
+  op?: AggregateOp;
+  /** chart only; defaults to "bar". */
+  chart?: ChartKind;
+  /** Exact-match filters keyed by field name, like the list route's filter.<field>. */
+  filter?: Record<string, string | number | boolean>;
+  /** chart only: how many groups to plot. */
+  limit?: number;
+}
+
 export interface PageConfig {
   path: string;
   title?: string;
   layout: LayoutType;
   entity?: string;      // which entity this page operates on
   components?: ComponentConfig[];
+  /** Tiles for the "dashboard" layout; ignored by every other layout. */
+  widgets?: WidgetConfig[];
 }
 
 // ─── Workflow ─────────────────────────────────────────────────────────────────

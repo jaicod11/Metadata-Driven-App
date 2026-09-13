@@ -39,12 +39,16 @@ import type {
   FieldValidation,
   LayoutType,
   PageConfig,
+  AggregateOp,
+  ChartKind,
   RelationType,
   RoleConfig,
   SelectOption,
   ThemeConfig,
   TriggerType,
   WorkflowConfig,
+  WidgetConfig,
+  WidgetType,
   WorkflowStep,
   WorkflowTrigger,
 } from "@/types/config.types";
@@ -67,6 +71,20 @@ export const RELATION_TYPES = [
 export const PERMISSION_ACTIONS = [
   "read", "create", "update", "delete", "auditLog",
 ] as const satisfies readonly (keyof EntityPermissionRule)[];
+
+export const WIDGET_TYPES = [
+  "count", "aggregate", "chart",
+] as const satisfies readonly WidgetType[];
+
+export const AGGREGATE_OPS = [
+  "sum", "avg", "min", "max",
+] as const satisfies readonly AggregateOp[];
+
+export const CHART_KINDS = ["bar", "line"] as const satisfies readonly ChartKind[];
+
+/** Most groups a chart widget will plot when it does not say. */
+export const DEFAULT_CHART_LIMIT = 12;
+export const MAX_CHART_LIMIT = 50;
 
 export const LAYOUT_TYPES = [
   "form", "table", "dashboard", "detail", "auditLog", "grid", "tabs", "stack",
@@ -194,12 +212,26 @@ export const componentSchema = z.object({
   props: z.record(z.unknown()).optional(),
 }) satisfies z.ZodType<ComponentConfig>;
 
+export const widgetSchema = z.object({
+  type: z.enum(WIDGET_TYPES),
+  title: z.string().optional(),
+  entity: z.string(),
+  field: z.string().optional(),
+  op: z.enum(AGGREGATE_OPS).optional(),
+  chart: z.enum(CHART_KINDS).optional(),
+  filter: z
+    .record(z.union([z.string(), z.number(), z.boolean()]))
+    .optional(),
+  limit: z.number().optional(),
+}) satisfies z.ZodType<WidgetConfig>;
+
 export const pageSchema = z.object({
   path: z.string(),
   title: z.string().optional(),
   layout: layoutTypeSchema,
   entity: z.string().optional(),
   components: z.array(componentSchema).optional(),
+  widgets: z.array(widgetSchema).optional(),
 }) satisfies z.ZodType<PageConfig>;
 
 // ─── Workflows ────────────────────────────────────────────────────────────────
@@ -469,6 +501,51 @@ const componentInputSchema = z
   )
   .passthrough();
 
+const widgetInputSchema = z
+  .object(
+    {
+      // An unknown widget type has no sensible fallback, so the parser drops
+      // the widget with a warning rather than guessing. Only the JSON type is
+      // enforced here.
+      type: z
+        .string({
+          invalid_type_error: `Widget "type" must be a string — one of: ${WIDGET_TYPES.join(", ")}`,
+        })
+        .optional(),
+      entity: requiredText("Widget entity"),
+      // Whether these name real fields is checked by widgetReferenceErrors().
+      field: z
+        .string({ invalid_type_error: `Widget "field" must be a field name` })
+        .optional(),
+      op: z
+        .string({
+          invalid_type_error: `Widget "op" must be a string — one of: ${AGGREGATE_OPS.join(", ")}`,
+        })
+        .optional(),
+      chart: z
+        .string({
+          invalid_type_error: `Widget "chart" must be a string — one of: ${CHART_KINDS.join(", ")}`,
+        })
+        .optional(),
+      limit: z
+        .number({ invalid_type_error: `Widget "limit" must be a number` })
+        .optional(),
+      filter: z
+        .record(
+          z.union([z.string(), z.number(), z.boolean()], {
+            errorMap: () => ({
+              message: `A widget filter value must be a string, number, or boolean`,
+            }),
+          }),
+          { invalid_type_error: `Widget "filter" must be an object keyed by field name` }
+        )
+        .optional(),
+      title: forgiving,
+    },
+    { invalid_type_error: "Each widget must be an object" }
+  )
+  .passthrough();
+
 const pageInputSchema = z
   .object(
     {
@@ -485,6 +562,11 @@ const pageInputSchema = z
       components: z
         .array(componentInputSchema, {
           invalid_type_error: `Page "components" must be an array of component objects`,
+        })
+        .optional(),
+      widgets: z
+        .array(widgetInputSchema, {
+          invalid_type_error: `Page "widgets" must be an array of widget objects`,
         })
         .optional(),
     },
@@ -545,6 +627,7 @@ const ITEM_NOUNS: Record<string, string> = {
   options: "option",
   pages: "page",
   components: "component",
+  widgets: "widget",
   actions: "action",
   workflows: "workflow",
   steps: "step",
@@ -557,6 +640,7 @@ const ITEM_NAME_KEYS: Record<string, string> = {
   options: "label",
   pages: "path",
   components: "type",
+  widgets: "title",
   actions: "label",
   workflows: "name",
   steps: "name",
@@ -758,6 +842,150 @@ export function computedExpressionErrors(raw: unknown): ConfigError[] {
   return errors;
 }
 
+/**
+ * Cross-reference check for dashboard widgets, reported like a dangling
+ * relation target: a widget that names an entity or field the config does not
+ * define can never render, and has nothing to fall back to.
+ *
+ * Only stored fields qualify. A computed field is derived at read time and a
+ * hasMany lives on the child, so neither can be counted, summed or grouped in
+ * the database.
+ */
+export function widgetReferenceErrors(raw: unknown): ConfigError[] {
+  if (!isRecord(raw) || !Array.isArray(raw.pages)) return [];
+
+  const entities = Array.isArray(raw.entities) ? raw.entities.filter(isRecord) : [];
+  const errors: ConfigError[] = [];
+
+  const entityByName = new Map<string, Record<string, unknown>>();
+  for (const entity of entities) {
+    if (typeof entity.name === "string" && entity.name.trim()) {
+      entityByName.set(entity.name.trim(), entity);
+    }
+  }
+
+  raw.pages.forEach((page, pageIndex) => {
+    if (!isRecord(page) || !Array.isArray(page.widgets)) return;
+
+    page.widgets.forEach((widget, widgetIndex) => {
+      if (!isRecord(widget)) return;
+
+      const at = (...rest: string[]) => [
+        "pages",
+        pageIndex,
+        "widgets",
+        widgetIndex,
+        ...rest,
+      ];
+      const type = typeof widget.type === "string" ? widget.type : "";
+      const entityName =
+        typeof widget.entity === "string" ? widget.entity.trim() : "";
+
+      const entity = entityByName.get(entityName);
+      if (!entity) {
+        errors.push(
+          configError(
+            raw,
+            at("entity"),
+            `Widget entity "${entityName}" is not defined` +
+              (entityByName.size > 0
+                ? ` — this config defines: ${Array.from(entityByName.keys()).join(", ")}`
+                : "")
+          )
+        );
+        return;
+      }
+
+      const fields = Array.isArray(entity.fields) ? entity.fields.filter(isRecord) : [];
+      const fieldByName = new Map<string, Record<string, unknown>>();
+      for (const field of fields) {
+        if (typeof field.name === "string" && field.name.trim()) {
+          fieldByName.set(field.name.trim(), field);
+        }
+      }
+      const known = Array.from(fieldByName.keys()).join(", ");
+
+      /** Resolve a named field, reporting why it cannot be queried. */
+      const resolveStored = (
+        name: string,
+        path: (string | number)[],
+        role: string
+      ): Record<string, unknown> | null => {
+        const field = fieldByName.get(name);
+        if (!field) {
+          errors.push(
+            configError(
+              raw,
+              path,
+              `${role} "${name}" is not a field of entity "${entityName}"` +
+                (known ? ` — it defines: ${known}` : "")
+            )
+          );
+          return null;
+        }
+        if (field.type === "computed") {
+          errors.push(
+            configError(
+              raw,
+              path,
+              `${role} "${name}" is computed, so it is not stored and cannot be queried`
+            )
+          );
+          return null;
+        }
+        if (field.type === "relation" && field.relationType === "hasMany") {
+          errors.push(
+            configError(
+              raw,
+              path,
+              `${role} "${name}" is a hasMany relation, which holds no value on this record`
+            )
+          );
+          return null;
+        }
+        return field;
+      };
+
+      // "aggregate" and "chart" both need a field; "count" never uses one.
+      if (type === "aggregate" || type === "chart") {
+        const fieldName =
+          typeof widget.field === "string" ? widget.field.trim() : "";
+
+        if (!fieldName) {
+          errors.push(
+            configError(
+              raw,
+              at("field"),
+              type === "aggregate"
+                ? `An "aggregate" widget needs a "field" to reduce`
+                : `A "chart" widget needs a "field" to group by`
+            )
+          );
+        } else {
+          const field = resolveStored(fieldName, at("field"), "Widget field");
+          if (field && type === "aggregate" && field.type !== "number") {
+            errors.push(
+              configError(
+                raw,
+                at("field"),
+                `Widget field "${fieldName}" is type "${field.type}"; sum, avg, min and max need a "number" field`
+              )
+            );
+          }
+        }
+      }
+
+      if (isRecord(widget.filter)) {
+        for (const key of Object.keys(widget.filter)) {
+          resolveStored(key, at("filter", key), "Widget filter");
+        }
+      }
+    });
+  });
+
+  return errors;
+}
+
 /** Role names declared by a raw config, in declaration order. */
 function declaredRoleNames(raw: unknown): string[] {
   if (!isRecord(raw) || !Array.isArray(raw.roles)) return [];
@@ -913,6 +1141,7 @@ export function validateAppConfig(raw: unknown): ConfigValidationResult {
     ...relationReferenceErrors(raw),
     ...roleReferenceErrors(raw),
     ...computedExpressionErrors(raw),
+    ...widgetReferenceErrors(raw),
   ]);
 
   if (!result.success || errors.length > 0) {

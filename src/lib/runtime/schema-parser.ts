@@ -20,11 +20,18 @@ import {
   ConfigWarning,
   RelationType,
   RoleConfig,
+  WidgetConfig,
+  WidgetType,
   WorkflowConfig,
 } from "@/types/config.types";
 import {
+  AGGREGATE_OPS,
+  CHART_KINDS,
+  DEFAULT_CHART_LIMIT,
   DEFAULT_CONFIG_VERSION,
   FIELD_TYPES,
+  MAX_CHART_LIMIT,
+  WIDGET_TYPES,
   LAYOUT_TYPES,
   RELATION_TYPES,
   TRIGGER_TYPES,
@@ -435,12 +442,116 @@ function parsePage(
     }
   }
 
+  // ── widgets ───────────────────────────────────────────────────────────────
+  const widgets = parseWidgets(data.widgets, layout, pagePath, path, warnings);
+
   return {
     path: pagePath,
     title: typeof data.title === "string" ? data.title.trim() : undefined,
     layout,
     entity: typeof data.entity === "string" ? data.entity : undefined,
+    widgets,
   };
+}
+
+/**
+ * Dashboard tiles. Entity and field references are verified by the gate, so
+ * what is left here degrades: an unknown widget type is dropped (there is
+ * nothing to guess), and an unknown op or chart kind falls back like any other
+ * unknown enum.
+ */
+function parseWidgets(
+  raw: unknown,
+  layout: LayoutType,
+  pagePath: string,
+  path: string,
+  warnings: ConfigWarning[]
+): WidgetConfig[] | undefined {
+  if (!Array.isArray(raw)) return undefined;
+
+  if (raw.length > 0 && layout !== "dashboard") {
+    warnings.push({
+      path: `${path}.widgets`,
+      message: `Page "${pagePath}" declares widgets but its layout is "${layout}" — only the "dashboard" layout renders them`,
+    });
+  }
+
+  const widgets: WidgetConfig[] = [];
+
+  raw.forEach((entry, i) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return;
+    const data = entry as Record<string, unknown>;
+    const at = `${path}.widgets[${i}]`;
+
+    if (!WIDGET_TYPES.includes(data.type as WidgetType)) {
+      warnings.push({
+        path: `${at}.type`,
+        message: data.type
+          ? `Unknown widget type "${data.type}" on page "${pagePath}" — skipping this widget`
+          : `Widget on page "${pagePath}" has no type — skipping it`,
+      });
+      return;
+    }
+    const type = data.type as WidgetType;
+
+    let op: WidgetConfig["op"];
+    if (type === "aggregate") {
+      if (AGGREGATE_OPS.includes(data.op as NonNullable<WidgetConfig["op"]>)) {
+        op = data.op as WidgetConfig["op"];
+      } else {
+        op = "sum";
+        if (data.op !== undefined) {
+          warnings.push({
+            path: `${at}.op`,
+            message: `Unknown aggregate op "${data.op}" — defaulting to "sum"`,
+          });
+        }
+      }
+    }
+
+    let chart: WidgetConfig["chart"];
+    if (type === "chart") {
+      if (CHART_KINDS.includes(data.chart as NonNullable<WidgetConfig["chart"]>)) {
+        chart = data.chart as WidgetConfig["chart"];
+      } else {
+        chart = "bar";
+        if (data.chart !== undefined) {
+          warnings.push({
+            path: `${at}.chart`,
+            message: `Unknown chart type "${data.chart}" — defaulting to "bar"`,
+          });
+        }
+      }
+    }
+
+    const filter =
+      data.filter && typeof data.filter === "object" && !Array.isArray(data.filter)
+        ? (Object.fromEntries(
+            Object.entries(data.filter as Record<string, unknown>).filter(
+              ([, v]) =>
+                typeof v === "string" || typeof v === "number" || typeof v === "boolean"
+            )
+          ) as WidgetConfig["filter"])
+        : undefined;
+
+    widgets.push({
+      type,
+      title: typeof data.title === "string" ? data.title.trim() : undefined,
+      entity: String(data.entity).trim(),
+      field: typeof data.field === "string" ? data.field.trim() : undefined,
+      op,
+      chart,
+      filter,
+      limit:
+        type === "chart" && typeof data.limit === "number"
+          ? Math.min(Math.max(1, Math.floor(data.limit)), MAX_CHART_LIMIT)
+          : type === "chart"
+          ? DEFAULT_CHART_LIMIT
+          : undefined,
+    });
+  });
+
+  return widgets;
 }
 
 function parseWorkflow(

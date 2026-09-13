@@ -4,6 +4,7 @@
 import { AppConfig, EntityConfig, PageConfig } from "@/types/config.types";
 import { useRuntimeData } from "@/hooks/useRuntimeData";
 import { StatCard } from "./StatCard";
+import { DashboardWidgets } from "./DashboardWidgets";
 import {
   ActiveRole,
   FULL_ACCESS_ROLE,
@@ -19,14 +20,16 @@ interface Props {
 }
 
 export function DynamicDashboard({
+  page,
   config,
   appId,
   role = FULL_ACCESS_ROLE,
 }: Props) {
   // Counting records is reading them: only summarise what this role may see.
   const entities = readableEntities(config, role);
+  const hasWidgets = (page?.widgets?.length ?? 0) > 0;
 
-  if (entities.length === 0) {
+  if (entities.length === 0 && !hasWidgets) {
     return (
       <div className="p-4 rounded-lg border border-dashed border-gray-300 bg-gray-50">
         <p className="text-sm text-gray-600">
@@ -39,6 +42,16 @@ export function DynamicDashboard({
 
   return (
     <div className="space-y-8">
+      {/* Config-declared widgets, when the page has any */}
+      {hasWidgets && (
+        <DashboardWidgets
+          page={page}
+          appId={appId}
+          config={config}
+          role={role}
+        />
+      )}
+
       {/* Stats row — one card per entity */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-4">
         {entities.map((entity) => (

@@ -155,6 +155,48 @@ export function useAuditLog(
   };
 }
 
+export interface WidgetResult {
+  index: number;
+  type: "count" | "aggregate" | "chart";
+  title: string;
+  /** count and aggregate. null when an aggregate matched no rows. */
+  value?: number | null;
+  /** chart */
+  points?: { label: string | null; value: number }[];
+  chart?: "bar" | "line";
+  op?: string;
+  field?: string;
+}
+
+/**
+ * Computed values for one dashboard page's widgets.
+ *
+ * The server decides which widgets are in the response; anything this role may
+ * not see is simply absent, so there is nothing to render by accident.
+ */
+export function useDashboardWidgets(
+  appId: string | undefined,
+  pagePath: string | undefined,
+  enabled = true
+) {
+  const key =
+    appId && pagePath && enabled
+      ? `/api/widgets?appId=${encodeURIComponent(appId)}&path=${encodeURIComponent(pagePath)}`
+      : null;
+
+  const { data, error, isLoading, mutate } = useSWR(key, fetcher, {
+    revalidateOnFocus: false,
+    keepPreviousData: true,
+  });
+
+  return {
+    widgets: ((data?.widgets ?? null) as WidgetResult[] | null),
+    isLoading,
+    error: (error ?? null) as Error | null,
+    mutate,
+  };
+}
+
 /** Imperatively revalidate entity data from outside a component */
 export function revalidateEntity(appId: string, entity: string) {
   globalMutate(
